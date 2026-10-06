@@ -1,6 +1,6 @@
 {
-  "name": "AI Video Editor",
-  "short_name": "Video Editor",
+  "name": "AI editor open source",
+  "short_name": "AI editor",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",

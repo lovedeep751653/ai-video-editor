@@ -1,4 +1,4 @@
-# AI Video Editor
+# AI editor open source
 
 A mobile-first app that turns raw phone footage into a finished short video,
 automatically. Upload videos and photos; it measures every moment, drops the

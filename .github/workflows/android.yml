@@ -25,16 +25,16 @@ jobs:
       - name: Name the APK
         run: |
           mkdir -p out
-          cp android/app/build/outputs/apk/release/*.apk out/AI-Video-Editor.apk
+          cp android/app/build/outputs/apk/release/*.apk out/AI-editor-open-source.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: AI-Video-Editor-APK
-          path: out/AI-Video-Editor.apk
+          name: AI-editor-open-source-APK
+          path: out/AI-editor-open-source.apk
       - name: Publish as a download link
         uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-latest
-          name: AI Video Editor APK
+          name: AI editor open source APK
           body: Install this file on your Android phone, then paste your editor's web address once.
-          files: out/AI-Video-Editor.apk
+          files: out/AI-editor-open-source.apk
           make_latest: true

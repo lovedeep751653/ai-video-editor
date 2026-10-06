@@ -32,7 +32,7 @@ KEEP_HOURS = float(os.environ.get("EDITOR_KEEP_HOURS", 24))
 PASSWORD = os.environ.get("APP_PASSWORD", "")
 MAX_FILES = 40
 
-app = FastAPI(title="AI Video Editor")
+app = FastAPI(title="AI editor open source")
 jobs: dict[str, dict] = {}
 lock = threading.Lock()
 worker = ThreadPoolExecutor(max_workers=1)  # one job at a time; others wait their turn

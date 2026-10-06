@@ -4,5 +4,5 @@ pluginManagement {
 dependencyResolutionManagement {
     repositories { google(); mavenCentral() }
 }
-rootProject.name = "AI Video Editor"
+rootProject.name = "AI editor open source"
 include(":app")

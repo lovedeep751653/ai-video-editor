@@ -26,7 +26,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 
 /**
- * The app is a full-screen window onto the AI Video Editor running on the
+ * The app is a full-screen window onto the AI editor open source running on the
  * user's own server. On first launch it asks once for that address and
  * remembers it; everything else (uploading, editing, downloading) happens in
  * the page itself.
