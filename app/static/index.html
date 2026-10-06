@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111318">
+<title>AI Video Editor</title>
+<link rel="stylesheet" href="style.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+<main>
+  <header class="top">
+    <h1>AI Video Editor</h1>
+    <button id="settings-btn" class="icon-btn" aria-label="Settings">⚙︎</button>
+  </header>
+
+  <nav id="tabs" class="tabs">
+    <button data-tab="edit" class="on">Edit my videos</button>
+    <button data-tab="create">Create with AI</button>
+  </nav>
+
+  <!-- ============ EDIT ============ -->
+  <section id="edit">
+    <p class="sub">Add your videos and photos. The AI picks the best moments and edits them for you.</p>
+    <label class="big-btn primary" for="file-input"><span class="icon">＋</span> Add videos &amp; photos</label>
+    <input id="file-input" type="file" accept="video/*,image/*" multiple hidden>
+    <p id="empty-hint" class="hint">Nothing added yet.</p>
+    <ul id="file-list" class="grid"></ul>
+
+    <label class="big-btn" for="music-input"><span class="icon">♪</span> <span id="music-label">Add music (optional)</span></label>
+    <input id="music-input" type="file" accept="audio/*,video/*" hidden>
+    <button id="music-remove" class="link-btn" hidden>Remove music</button>
+
+    <h3>Tell the AI what you want (optional)</h3>
+    <textarea id="request" rows="3" placeholder="e.g. Make it cinematic, 30 seconds, vertical, smooth transitions, title &quot;Goa Trip&quot;"></textarea>
+    <p id="request-hint" class="hint small"></p>
+
+    <details id="options">
+      <summary>Choose yourself (optional)</summary>
+      <p class="hint">Everything is on <b>Auto</b>: the AI decides from your footage.</p>
+      <h3>Shape</h3>
+      <div class="chips" data-name="format">
+        <button type="button" data-value="auto" class="on">Auto</button>
+        <button type="button" data-value="9:16">Tall 9:16<small>Reels, Shorts, TikTok</small></button>
+        <button type="button" data-value="16:9">Wide 16:9<small>YouTube, TV</small></button>
+        <button type="button" data-value="1:1">Square 1:1<small>Feed posts</small></button>
+      </div>
+      <h3>Length</h3>
+      <div class="chips" data-name="length">
+        <button type="button" data-value="auto" class="on">Auto</button>
+        <button type="button" data-value="15">15 sec</button>
+        <button type="button" data-value="30">30 sec</button>
+        <button type="button" data-value="60">60 sec</button>
+      </div>
+      <h3>Pace</h3>
+      <div class="chips" data-name="style">
+        <button type="button" data-value="auto" class="on">Auto</button>
+        <button type="button" data-value="smooth">Smooth<small>Longer shots</small></button>
+        <button type="button" data-value="fast">Fast<small>Quick cuts</small></button>
+      </div>
+      <h3>Look</h3>
+      <div class="chips three" data-name="look">
+        <button type="button" data-value="auto" class="on">Auto fix</button>
+        <button type="button" data-value="cinematic">Cinematic</button>
+        <button type="button" data-value="vivid">Vivid</button>
+        <button type="button" data-value="warm">Warm</button>
+        <button type="button" data-value="cool">Cool</button>
+        <button type="button" data-value="vintage">Vintage</button>
+        <button type="button" data-value="bw">Black &amp; white</button>
+        <button type="button" data-value="dramatic">Dramatic</button>
+        <button type="button" data-value="none">Natural</button>
+      </div>
+      <h3>Transitions</h3>
+      <div class="chips" data-name="transitions">
+        <button type="button" data-value="auto" class="on">Auto</button>
+        <button type="button" data-value="soft">Smooth</button>
+        <button type="button" data-value="dynamic">Creative</button>
+        <button type="button" data-value="cinematic">Cinematic</button>
+        <button type="button" data-value="cuts">Straight cuts</button>
+      </div>
+      <h3>Slow motion</h3>
+      <div class="chips three" data-name="slowmo">
+        <button type="button" data-value="auto" class="on">Auto</button>
+        <button type="button" data-value="on">On</button>
+        <button type="button" data-value="off">Off</button>
+      </div>
+      <h3>Captions (words on screen from the speech)</h3>
+      <div class="chips three" data-name="captions">
+        <button type="button" data-value="auto" class="on">Auto</button>
+        <button type="button" data-value="on">On</button>
+        <button type="button" data-value="off">Off</button>
+      </div>
+      <h3>Caption language</h3>
+      <div class="chips three" data-name="caption_lang">
+        <button type="button" data-value="auto" class="on">As spoken</button>
+        <button type="button" data-value="en">English</button>
+        <button type="button" data-value="hi">हिंदी</button>
+        <button type="button" data-value="pa">ਪੰਜਾਬੀ</button>
+        <button type="button" data-value="hinglish">Hinglish</button>
+      </div>
+      <h3>Caption position</h3>
+      <div class="chips three" data-name="caption_pos">
+        <button type="button" data-value="bottom" class="on">Bottom</button>
+        <button type="button" data-value="middle">Middle</button>
+        <button type="button" data-value="top">Top</button>
+      </div>
+      <h3>Caption style <small id="style-count"></small></h3>
+      <ul id="style-grid" class="style-grid"></ul>
+      <h3>Title on screen</h3>
+      <input id="title" type="text" maxlength="80" placeholder="e.g. Summer 2026 (leave empty for none)">
+    </details>
+
+    <button id="make-btn" class="big-btn go" disabled>Make my video</button>
+  </section>
+
+  <!-- ============ CREATE WITH AI ============ -->
+  <section id="create" hidden>
+    <div id="ai-off" class="card" hidden>
+      <h2>Turn on AI creation</h2>
+      <p>Making pictures and videos from a description uses Google's AI. It needs your own Google AI key, added once in Settings.</p>
+      <button class="big-btn primary" data-open-settings>Open Settings</button>
+    </div>
+    <div id="ai-on" hidden>
+      <h3>What do you want to make?</h3>
+      <div class="chips three" data-name="mode" data-group="ai">
+        <button type="button" data-value="image" class="on">Picture</button>
+        <button type="button" data-value="video">Video clip</button>
+        <button type="button" data-value="story">Full video<small>from an idea</small></button>
+      </div>
+      <h3>Describe it</h3>
+      <textarea id="prompt" rows="4" placeholder="e.g. A golden sunset over a quiet beach with palm trees, waves rolling in"></textarea>
+      <h3>Shape</h3>
+      <div class="chips three" data-name="aformat" data-group="ai">
+        <button type="button" data-value="9:16" class="on">Tall 9:16</button>
+        <button type="button" data-value="16:9">Wide 16:9</button>
+        <button type="button" data-value="1:1" data-not-video>Square 1:1</button>
+      </div>
+      <div id="story-opts" hidden>
+        <h3>Build the video from</h3>
+        <div class="chips" data-name="source" data-group="ai">
+          <button type="button" data-value="pictures" class="on">AI pictures<small>Cheaper, with motion added</small></button>
+          <button type="button" data-value="clips">AI video clips<small>Real motion, costs more</small></button>
+        </div>
+        <h3>Editing request (optional)</h3>
+        <input id="story-request" type="text" placeholder="e.g. cinematic, title &quot;Dreams&quot;">
+      </div>
+      <h3>How many</h3>
+      <div class="chips four" data-name="count" data-group="ai">
+        <button type="button" data-value="1" class="on">1</button>
+        <button type="button" data-value="2">2</button>
+        <button type="button" data-value="3">3</button>
+        <button type="button" data-value="4" data-not-video>4</button>
+      </div>
+      <p id="cost-hint" class="hint small"></p>
+      <button id="create-btn" class="big-btn go">Create</button>
+    </div>
+  </section>
+
+  <!-- ============ SETTINGS ============ -->
+  <section id="settings" hidden>
+    <h2>Settings</h2>
+    <div class="card">
+      <h3>Google AI key</h3>
+      <p class="small">Needed for AI pictures, AI videos and better understanding of typed requests.
+        Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>
+        (sign in with Google, tap <b>Create API key</b>, copy it, paste it here).</p>
+      <input id="key-input" type="password" autocomplete="off" placeholder="Paste your key here">
+      <button id="key-save" class="big-btn primary">Save key</button>
+      <ul id="ai-status" class="status-list"></ul>
+      <button id="key-remove" class="link-btn" hidden>Remove key</button>
+    </div>
+    <button class="big-btn" data-back>Back</button>
+  </section>
+
+  <!-- ============ ACCESS CODE ============ -->
+  <section id="login" hidden>
+    <h2>Enter access code</h2>
+    <input id="code-input" type="password" autocomplete="current-password" placeholder="Access code">
+    <button id="code-btn" class="big-btn primary">Continue</button>
+    <p id="login-error" class="error"></p>
+  </section>
+
+  <!-- ============ PROGRESS ============ -->
+  <section id="working" hidden>
+    <h2 id="work-title">Uploading…</h2>
+    <div class="bar"><div id="bar-fill"></div></div>
+    <p id="work-pct" class="pct">0%</p>
+    <p id="work-stage" class="hint"></p>
+    <p class="hint">Keep this page open. Bigger videos take longer.</p>
+  </section>
+
+  <!-- ============ RESULT ============ -->
+  <section id="result" hidden>
+    <h2 id="result-title">Your video is ready</h2>
+    <div id="final-box">
+      <video id="player" controls playsinline preload="metadata"></video>
+      <a id="download-btn" class="big-btn go" download>Download video</a>
+    </div>
+    <ul id="gallery" class="gallery"></ul>
+    <button id="again-btn" class="big-btn">Make another</button>
+    <details id="plan-box" open>
+      <summary>What the AI did</summary>
+      <ul id="notes"></ul>
+      <ol id="plan-list"></ol>
+    </details>
+  </section>
+
+  <!-- ============ ERROR ============ -->
+  <section id="error" hidden>
+    <h2>That didn't work</h2>
+    <p id="error-text" class="error"></p>
+    <button id="retry-btn" class="big-btn primary">Try again</button>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

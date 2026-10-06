@@ -1,0 +1,40 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build APK
+        working-directory: android
+        run: gradle assembleRelease --no-daemon
+      - name: Name the APK
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/*.apk out/AI-Video-Editor.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AI-Video-Editor-APK
+          path: out/AI-Video-Editor.apk
+      - name: Publish as a download link
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-latest
+          name: AI Video Editor APK
+          body: Install this file on your Android phone, then paste your editor's web address once.
+          files: out/AI-Video-Editor.apk
+          make_latest: true

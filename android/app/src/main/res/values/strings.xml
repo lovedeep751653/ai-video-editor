@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">AI Video Editor</string>
+    <string name="setup_help">Paste the web address of your editor below, then tap Connect. You only need to do this once.</string>
+    <string name="address_hint">https://your-editor-address</string>
+    <string name="connect">Connect</string>
+    <string name="change_address">Change address</string>
+</resources>
