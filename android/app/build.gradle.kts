@@ -6,7 +6,7 @@ plugins {
 
 // The editor engine (app/engine, app/server.py), the phone screen (app/static) and the
 // caption fonts (app/fonts) are copied in by the `prepare` script before each build.
-val abis = (findProperty("abis") as String? ?: "arm64-v8a,armeabi-v7a,x86_64").split(",")
+val abis = (findProperty("abis") as String? ?: "arm64-v8a,x86_64").split(",")
 
 android {
     namespace = "com.lovedeep.aivideoeditor"
