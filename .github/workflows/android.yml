@@ -30,7 +30,7 @@ jobs:
         with:
           gradle-version: '8.11.1'
       - name: Copy the editor into the app
-        run: .github/scripts/prepare-android.sh
+        run: sh .github/scripts/prepare-android.sh
       - name: Build APK
         working-directory: android
         run: gradle assembleRelease --no-daemon -PversionCode=${{ github.run_number }} -PversionName=2.${{ github.run_number }}
@@ -68,7 +68,7 @@ jobs:
           disk-size: 8G
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          script: .github/scripts/selftest.sh out/AI-editor-open-source.apk
+          script: bash .github/scripts/selftest.sh out/AI-editor-open-source.apk
       - uses: actions/upload-artifact@v4
         if: always()
         with:
