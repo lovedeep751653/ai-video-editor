@@ -2,14 +2,14 @@ name: Build Android APK
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'build/**']
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: apk
+  group: apk-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -21,26 +21,85 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      # Chaquopy (Python inside the app) needs the same Python version on the build machine.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
       # GitHub's Ubuntu machines already include the Android SDK (ANDROID_HOME).
       - uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: '8.11.1'
+      - name: Copy the editor into the app
+        run: .github/scripts/prepare-android.sh
       - name: Build APK
         working-directory: android
-        run: gradle assembleRelease --no-daemon
+        run: gradle assembleRelease --no-daemon -PversionCode=${{ github.run_number }} -PversionName=2.${{ github.run_number }}
       - name: Name the APK
         run: |
           mkdir -p out
           cp android/app/build/outputs/apk/release/*.apk out/AI-editor-open-source.apk
+          ls -la out
       - uses: actions/upload-artifact@v4
         with:
-          name: AI-editor-open-source-APK
+          name: apk
           path: out/AI-editor-open-source.apk
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: apk
+          path: out
+      - name: Allow the emulator to use hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Test on an Android phone emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          ram-size: 4096M
+          disk-size: 8G
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: .github/scripts/selftest.sh out/AI-editor-open-source.apk
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: out/test
+      - name: Publish test screenshots
+        if: always()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: selftest-latest
+          name: Latest phone test results
+          body: Screenshots and log from the latest automatic test on an Android emulator.
+          prerelease: true
+          files: out/test/*
+
+  publish:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: apk
+          path: out
       - name: Publish as a download link
         uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-latest
           name: AI editor open source APK
-          body: Install this file on your Android phone, then paste your editor's web address once.
+          body: |
+            Install this file on your Android phone. Everything runs on the phone itself: no website or server needed.
+            AI pictures, AI videos, captions and the chat's free-form understanding need internet and your own Google AI key (Settings in the app).
           files: out/AI-editor-open-source.apk
           make_latest: true

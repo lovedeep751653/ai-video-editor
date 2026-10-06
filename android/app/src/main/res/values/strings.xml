@@ -1,7 +1,8 @@
 <resources>
     <string name="app_name">AI editor open source</string>
-    <string name="setup_help">Paste the web address of your editor below, then tap Connect. You only need to do this once.</string>
-    <string name="address_hint">https://your-editor-address</string>
-    <string name="connect">Connect</string>
-    <string name="change_address">Change address</string>
+    <string name="starting">Starting the editor…</string>
+    <string name="first_start">Getting the editor ready.\nThe first start takes a little longer.</string>
+    <string name="start_failed">The editor couldn\'t start: %1$s</string>
+    <string name="channel_name">Video editing</string>
+    <string name="notif_working">Editing your video</string>
 </resources>

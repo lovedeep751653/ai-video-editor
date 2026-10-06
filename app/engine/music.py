@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+from . import ff
 
 RATE = 22050
 HOP = 512
@@ -61,13 +62,17 @@ def _comb(env: np.ndarray, period: float) -> tuple[float, float]:
 
 
 def analyze(path: Path) -> Music:
-    res = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", str(RATE),
-                          "-f", "f32le", "-"], capture_output=True)
-    if res.returncode != 0 or len(res.stdout) < RATE * 4 * 3:
+    info = ff.probe(path) or {}
+    duration = float((info.get("format") or {}).get("duration") or 0)
+    try:
+        # Two minutes is plenty to find the beat.
+        data = ff.raw(["-t", "120", "-i", str(path), "-vn", "-sn", "-ac", "1", "-ar", str(RATE), "-f", "f32le"])
+    except ff.FFError:
+        data = b""
+    if len(data) < RATE * 4 * 3:
         raise MusicError(f"{path.name}: the music file couldn't be read (or is shorter than 3 seconds)")
-    y = np.frombuffer(res.stdout, dtype=np.float32).astype(np.float64)
-    duration = len(y) / RATE
-    y = y[: int(min(duration, 120) * RATE)]  # two minutes is plenty to find the beat
+    y = np.frombuffer(data[: len(data) // 4 * 4], dtype=np.float32).astype(np.float64)
+    duration = max(duration, len(y) / RATE)
     env = _onsets(y)
     fps = RATE / HOP
 

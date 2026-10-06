@@ -259,3 +259,117 @@ def transcribe(key: str, model: str, audio: Path, lang: str = "auto") -> list[di
         if text and end > start >= 0:
             lines.append({"start": start, "end": end, "text": text})
     return sorted(lines, key=lambda x: x["start"])
+
+
+# ---------------------------------------------------------------- chat editing
+
+EDIT_OPS = ["remove_clips", "keep_only_clips", "move_clip", "cut_time", "keep_time", "trim_clip_start",
+            "trim_clip_end", "add_source_part", "speed", "zoom", "set_look", "set_format", "set_transitions",
+            "set_title", "add_text", "remove_texts", "set_captions", "caption_language", "caption_style",
+            "caption_position", "music_volume", "original_volume", "remove_music", "remove_pauses", "shorten_to",
+            "reedit", "sort_clips", "fade", "undo"]
+
+EDIT_GUIDE = """You are the editor inside a phone video-editing app. The user talks to you about the video
+they are editing, the way they would talk to a human video editor. You can see the current edit (clips in
+order, what each clip contains, the speech, on-screen text and settings) in the JSON below, and you change it
+by returning operations. The app applies them and renders a new version.
+
+Operations (all numbers are seconds unless said otherwise; clip numbers start at 1 as shown in "clips";
+times called "at" are positions in the CURRENT finished video):
+- remove_clips {clips:[n...]}            delete clips
+- keep_only_clips {clips:[n...]}         delete every other clip
+- move_clip {clip:n, to:m}               move clip n so it becomes clip m
+- cut_time {start, end}                  remove that stretch of the finished video (may cut inside clips)
+- keep_time {start, end}                 keep only that stretch of the finished video
+- trim_clip_start {clip, number}         remove `number` seconds from the start of the clip
+- trim_clip_end {clip, number}           remove `number` seconds from the end of the clip
+- add_source_part {source, start, end, to}  insert a part of an original file (source number, times in that
+                                         file) so it becomes clip `to` (leave `to` 0 to add at the end)
+- speed {clips:[n...] (empty = whole video), number}  0.25..4 (0.5 = slow motion, 2 = twice as fast)
+- zoom {clips:[n...] (empty = all), number}  1 = normal, 1.1..2 = punch in on the middle
+- set_look {value}: none|enhance|cinematic|vivid|warm|cool|vintage|bw|dramatic
+- set_format {value}: 9:16|16:9|1:1|original
+- set_transitions {value: cuts|soft|dynamic|cinematic, number: length 0.2..1.5 (0 = default)}
+- set_title {text}                       big title at the start ("" removes it)
+- add_text {text, start, end, position: top|middle|bottom}  text on screen between those times
+- remove_texts {clips:[n...] (text numbers from "texts"; empty = all)}
+- set_captions {value: on|off}           subtitles of the speech
+- caption_language {value: auto|en|hi|pa|hinglish}
+- caption_style {value: one of the caption style ids listed}
+- caption_position {value: top|middle|bottom}
+- music_volume {number 0..2}, original_volume {number 0..2}, remove_music {}
+- remove_pauses {value: gentle|strong}   cut silences and pauses out of the speech
+- shorten_to {number}                    make the video about that long by leaving out the weakest parts
+- reedit {value: highlight|cleanup, number: length (0 = automatic)}  start the edit again from the original
+                                         files (highlight = short best moments; cleanup = keep everything
+                                         good, remove pauses)
+- sort_clips {value: filmed|best_first|reverse}
+- fade {value: on|off}                   fade in/out at the very start and end
+- undo {}                                go back to the previous version
+
+Rules:
+- Do exactly what the user asks, nothing more. If the request is unclear or impossible, ask one short
+  question or explain, and return no operations.
+- If they only ask a question (what is in my video, how long is it...), answer it from the JSON with no
+  operations.
+- Use the speech ("transcript") and the visual descriptions to find moments by what is said or shown.
+- Adding music needs a music file: tell them to tap the music button; you cannot add music yourself.
+- "reply" is shown to the user: one or two short, friendly sentences saying what you did (or your answer),
+  in the same language and script the user wrote in (Hindi, Punjabi, Hinglish or English). No jargon.
+"""
+
+
+def edit_chat(key: str, model: str, context: dict, message: str, history: list[dict]) -> dict:
+    """Turns a chat message about the current edit into {"reply", "operations"}."""
+    op = {"type": "OBJECT", "properties": {
+        "op": {"type": "STRING", "enum": EDIT_OPS},
+        "clips": {"type": "ARRAY", "items": {"type": "INTEGER"}},
+        "clip": {"type": "INTEGER"}, "to": {"type": "INTEGER"}, "source": {"type": "INTEGER"},
+        "start": {"type": "NUMBER"}, "end": {"type": "NUMBER"}, "number": {"type": "NUMBER"},
+        "value": {"type": "STRING"}, "text": {"type": "STRING"}, "position": {"type": "STRING"},
+    }, "required": ["op"]}
+    schema = {"type": "OBJECT", "properties": {
+        "reply": {"type": "STRING"},
+        "operations": {"type": "ARRAY", "items": op},
+    }, "required": ["reply", "operations"]}
+    contents = []
+    for h in history[-8:]:
+        contents.append({"role": "user" if h["role"] == "user" else "model", "parts": [{"text": h["text"][:2000]}]})
+    contents.append({"role": "user", "parts": [{"text": "CURRENT EDIT:\n" + json.dumps(context, ensure_ascii=False)
+                                                + "\n\nUSER: " + message}]})
+    res = _request(key, "POST", f"models/{model}:generateContent", {
+        "systemInstruction": {"parts": [{"text": EDIT_GUIDE}]},
+        "contents": contents,
+        "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema, "temperature": 0.2},
+    }, timeout=180)
+    out = _json_from(res)
+    if not isinstance(out, dict):
+        raise AIError("Google AI gave an answer that couldn't be understood.")
+    ops = [o for o in (out.get("operations") or []) if isinstance(o, dict) and o.get("op") in EDIT_OPS]
+    return {"reply": str(out.get("reply") or "").strip(), "operations": ops}
+
+
+def describe_frames(key: str, model: str, frames: list[tuple[float, Path]]) -> list[dict]:
+    """Looks at pictures taken from a video and says briefly what is happening at each moment."""
+    if not frames:
+        return []
+    parts = []
+    for t, f in frames:
+        parts.append({"text": f"t={t:.1f}s"})
+        parts.append({"inlineData": {"mimeType": "image/jpeg", "data": base64.b64encode(f.read_bytes()).decode()}})
+    parts.append({"text": "These are frames from one video, each labelled with its time. For each frame write a "
+                          "very short description (max 12 words) of what is visible: people, actions, place, "
+                          "objects, text on screen. Return one item per frame."})
+    schema = {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+        "time": {"type": "NUMBER"}, "text": {"type": "STRING"}}, "required": ["time", "text"]}}
+    res = _request(key, "POST", f"models/{model}:generateContent", {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema, "temperature": 0},
+    }, timeout=180)
+    out = []
+    for item in _json_from(res) or []:
+        try:
+            out.append({"time": round(float(item["time"]), 1), "text": str(item["text"]).strip()[:120]})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out

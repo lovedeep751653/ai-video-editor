@@ -1,3 +1,10 @@
 data/
 __pycache__/
 *.pyc
+# Copied in at build time by .github/scripts/prepare-android.sh
+android/app/src/main/python/
+android/app/src/main/assets/editor/
+android/.gradle/
+android/app/build/
+android/build/
+out/

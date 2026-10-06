@@ -7,17 +7,18 @@ changes. For photos we measure the same picture-quality values once.
 
 from __future__ import annotations
 
-import json
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
+from . import ff
+
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".heic", ".heif"}
 
 GRID = 128  # analysis frames are shrunk to GRID x GRID grey pixels
 AUDIO_RATE = 8000
+SPEECH_RATE = 20  # fine sound-level values per second, for finding pauses
 
 
 class MediaError(Exception):
@@ -43,19 +44,24 @@ class Media:
     loudness: np.ndarray = field(default_factory=lambda: np.zeros(0))
     scene_cuts: list[float] = field(default_factory=list)
     score: np.ndarray = field(default_factory=lambda: np.zeros(0))  # filled by score_all
+    speech: np.ndarray = field(default_factory=lambda: np.zeros(0))  # sound level, SPEECH_RATE per second (dBFS)
+    sparse: bool = False  # studied at key frames only (long videos)
 
 
-def _run(cmd: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True)
+SPARSE_AFTER = 240  # videos longer than this (s) are studied at their key frames only, for speed
 
 
-def probe(path: Path, index: int) -> Media:
-    res = _run(["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", "-show_format", str(path)])
-    if res.returncode != 0:
+def probe_info(path: Path) -> dict | None:
+    return ff.probe(path)
+
+
+def probe(path: Path, index: int, info: dict | None = None) -> Media:
+    info = info if info is not None else ff.probe(path)
+    if info is None:
         raise MediaError(f"{path.name}: this file type can't be opened")
-    info = json.loads(res.stdout or "{}")
-    streams = info.get("streams", [])
-    vstreams = [s for s in streams if s.get("codec_type") == "video"]
+    streams = info.get("streams", []) or []
+    vstreams = [s for s in streams if s.get("codec_type") == "video"
+                and not (s.get("disposition") or {}).get("attached_pic")]
     if not vstreams:
         raise MediaError(f"{path.name}: no picture found in this file")
     v = vstreams[0]
@@ -72,7 +78,7 @@ def probe(path: Path, index: int) -> Media:
     if abs(rotation) % 180 == 90:
         w, h = h, w
 
-    duration = float(info.get("format", {}).get("duration") or v.get("duration") or 0)
+    duration = float((info.get("format") or {}).get("duration") or v.get("duration") or 0)
     frames = int(v.get("nb_frames") or 0)
     ext = path.suffix.lower()
     is_image = (
@@ -99,12 +105,14 @@ def _frame_metrics(f: np.ndarray) -> tuple[float, float, float, np.ndarray]:
 
 
 def analyze_image(m: Media) -> None:
-    cmd = ["ffmpeg", "-v", "error", "-i", str(m.path), "-frames:v", "1",
-           "-vf", f"scale={GRID}:{GRID}:flags=area,format=gray", "-f", "rawvideo", "-"]
-    res = subprocess.run(cmd, capture_output=True)
-    if res.returncode != 0 or len(res.stdout) < GRID * GRID:
+    try:
+        data = ff.raw(["-i", str(m.path), "-frames:v", "1",
+                       "-vf", f"scale={GRID}:{GRID}:flags=area,format=gray", "-f", "rawvideo"])
+    except ff.FFError:
+        data = b""
+    if len(data) < GRID * GRID:
         raise MediaError(f"{m.name}: this photo format can't be read")
-    f = np.frombuffer(res.stdout[: GRID * GRID], dtype=np.uint8).reshape(GRID, GRID) / 255.0
+    f = np.frombuffer(data[: GRID * GRID], dtype=np.uint8).reshape(GRID, GRID) / 255.0
     b, c, s, _ = _frame_metrics(f)
     m.times = np.array([0.0])
     m.brightness, m.contrast, m.sharpness = np.array([b]), np.array([c]), np.array([s])
@@ -113,33 +121,43 @@ def analyze_image(m: Media) -> None:
 
 
 def analyze_video(m: Media, progress=None) -> None:
-    fps = 4.0 if m.duration <= 300 else 2.0 if m.duration <= 1200 else 1.0
-    cmd = ["ffmpeg", "-v", "error", "-threads", "0", "-i", str(m.path), "-an",
-           "-vf", f"fps={fps},scale={GRID}:{GRID}:flags=area,format=gray",
-           "-f", "rawvideo", "-"]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    """Measures the video. Long videos are studied at their key frames only (the phone
+    camera stores a complete picture every second or so), which is many times faster
+    than decoding every frame and still shows what is in each second."""
+    sparse = m.duration > SPARSE_AFTER
+    fps = 1.0 if sparse else (4.0 if m.duration <= 120 else 2.0)
+    pre = ["-skip_frame", "nokey"] if sparse else []
+    audio_w = 0.15 if m.has_audio else 0.0
+    vid_progress = (lambda f: progress(f * (1 - audio_w))) if progress else None
+    try:
+        data = _raw_with_progress([*pre, "-threads", "0", "-i", str(m.path), "-an", "-sn", "-dn",
+                                   "-vf", f"fps={fps},scale={GRID}:{GRID}:flags=fast_bilinear,format=gray",
+                                   "-f", "rawvideo"], m.duration, vid_progress)
+    except ff.FFError:
+        data = b""
     size = GRID * GRID
+    n = len(data) // size
+    if n == 0:
+        raise MediaError(f"{m.name}: the video could not be decoded")
+    frames = np.frombuffer(data[: n * size], dtype=np.uint8).reshape(n, GRID, GRID)
     bright, contr, sharp, motion, cuts = [], [], [], [], []
     prev, prev_hist = None, None
-    expected = max(1, int(m.duration * fps))
-    i = 0
-    while True:
-        buf = proc.stdout.read(size)
-        if len(buf) < size:
-            break
-        f = np.frombuffer(buf, dtype=np.uint8).reshape(GRID, GRID) / 255.0
+    last_change = 0
+    for i in range(n):
+        f = frames[i] / 255.0
         b, c, s, hist = _frame_metrics(f)
         mo = float(np.abs(f - prev).mean()) if prev is not None else 0.0
+        if sparse and prev is not None and mo == 0.0:
+            # The same key frame repeated to fill the second: no new information.
+            bright.append(b), contr.append(c), sharp.append(s), motion.append(motion[-1] if motion else 0.0)
+            continue
+        if sparse and prev is not None:
+            mo = mo / max(1, i - last_change)  # change spread over the seconds between key frames
+            last_change = i
         if prev_hist is not None and np.abs(hist - prev_hist).sum() > 0.6 and mo > 0.08:
             cuts.append(i / fps)
         bright.append(b), contr.append(c), sharp.append(s), motion.append(mo)
         prev, prev_hist = f, hist
-        i += 1
-        if progress and i % 20 == 0:
-            progress(min(1.0, i / expected))
-    proc.wait()
-    if not bright:
-        raise MediaError(f"{m.name}: the video could not be decoded")
     if len(motion) > 1:
         motion[0] = motion[1]
     # A scene cut makes a big "motion" spike that isn't real movement.
@@ -151,23 +169,65 @@ def analyze_video(m: Media, progress=None) -> None:
     m.brightness, m.contrast = np.array(bright), np.array(contr)
     m.sharpness, m.motion = np.array(sharp), np.array(motion)
     m.scene_cuts = cuts
-    m.loudness = _loudness(m, fps, len(bright))
+    m.sparse = sparse
+    m.loudness, m.speech = _loudness(m, fps, len(bright))
+    if progress:
+        progress(1.0)
 
 
-def _loudness(m: Media, fps: float, n: int) -> np.ndarray:
+def _raw_with_progress(args: list[str], duration: float, progress) -> bytes:
+    import os
+    import tempfile
+    fd, out = tempfile.mkstemp(prefix="ffout_", suffix=".raw", dir=ff._tmpdir())
+    os.close(fd)
+    try:
+        ff.run([*args, out], duration, progress)
+        return Path(out).read_bytes()
+    finally:
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
+
+
+def _loudness(m: Media, fps: float, n: int) -> tuple[np.ndarray, np.ndarray]:
+    """Sound level per analysis moment (dBFS) and a fine 20-per-second level track
+    used to find pauses in speech."""
     if not m.has_audio:
-        return np.zeros(n)
-    cmd = ["ffmpeg", "-v", "error", "-i", str(m.path), "-vn", "-ac", "1", "-ar", str(AUDIO_RATE),
-           "-f", "s16le", "-"]
-    res = subprocess.run(cmd, capture_output=True)
-    pcm = np.frombuffer(res.stdout[: len(res.stdout) // 2 * 2], dtype=np.int16).astype(np.float64) / 32768
+        return np.zeros(n), np.zeros(0)
+    try:
+        data = ff.raw(["-i", str(m.path), "-vn", "-sn", "-dn", "-ac", "1", "-ar", str(AUDIO_RATE), "-f", "s16le"])
+    except ff.FFError:
+        data = b""
+    pcm = np.frombuffer(data[: len(data) // 2 * 2], dtype=np.int16).astype(np.float32) / 32768
+    hop = AUDIO_RATE // SPEECH_RATE
+    k = len(pcm) // hop
+    fine = 20 * np.log10(np.sqrt((pcm[: k * hop].reshape(k, hop) ** 2).mean(axis=1)) + 1e-5) if k else np.zeros(0)
     step = int(AUDIO_RATE / fps)
     out = np.zeros(n)
     for i in range(n):
         chunk = pcm[i * step:(i + 1) * step]
         if len(chunk):
-            out[i] = 20 * np.log10(np.sqrt(np.mean(chunk ** 2)) + 1e-5)  # dBFS, -100 .. 0
-    return out
+            out[i] = 20 * np.log10(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)) + 1e-5)  # dBFS, -100 .. 0
+    return out, fine.astype(np.float32)
+
+
+def save(m: Media, path: Path) -> None:
+    np.savez_compressed(path, times=m.times, brightness=m.brightness, contrast=m.contrast, sharpness=m.sharpness,
+                        motion=m.motion, loudness=m.loudness, speech=m.speech,
+                        scene_cuts=np.array(m.scene_cuts, dtype=np.float64), sparse=np.array([m.sparse]))
+
+
+def load(m: Media, path: Path) -> bool:
+    try:
+        d = np.load(path)
+        m.times, m.brightness, m.contrast = d["times"], d["brightness"], d["contrast"]
+        m.sharpness, m.motion, m.loudness, m.speech = d["sharpness"], d["motion"], d["loudness"], d["speech"]
+        m.scene_cuts = [float(x) for x in d["scene_cuts"]]
+        m.sparse = bool(d["sparse"][0])
+        return True
+    except (OSError, KeyError, ValueError):
+        return False
 
 
 def _rank(values: np.ndarray) -> np.ndarray:
@@ -202,7 +262,8 @@ def score_all(media: list[Media]) -> None:
             interest, shake, audio = np.full(n, 0.55), np.zeros(n), np.full(n, 0.5)
         else:
             interest = np.clip(m.motion / 0.035, 0, 1)
-            shake = np.clip((m.motion - 0.12) / 0.15, 0, 1)
+            # Shake can only be measured from frames close together.
+            shake = np.zeros(n) if m.sparse else np.clip((m.motion - 0.12) / 0.15, 0, 1)
             if m.has_audio:
                 audio = loud_rank[lpos:lpos + n]
                 lpos += n

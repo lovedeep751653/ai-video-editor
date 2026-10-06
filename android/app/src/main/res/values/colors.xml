@@ -1,9 +1,9 @@
 <resources>
-    <color name="bg">#111318</color>
-    <color name="card">#1C1F27</color>
-    <color name="text">#F2F3F5</color>
-    <color name="muted">#9AA1AD</color>
-    <color name="accent">#4F8CFF</color>
+    <color name="bg">#0B0B10</color>
+    <color name="card">#17171F</color>
+    <color name="text">#F4F4F7</color>
+    <color name="muted">#9A9AAE</color>
+    <color name="accent">#7C5CFF</color>
     <color name="danger">#FF6B6B</color>
-    <color name="ic_launcher_background">#4F8CFF</color>
+    <color name="ic_launcher_background">#7C5CFF</color>
 </resources>

@@ -32,11 +32,11 @@ def parse_keywords(request: str) -> dict:
     # Length
     m = re.search(r"(\d+(?:\.\d+)?)\s*(?:-|\s)?(min|mins|minute|minutes)\b", t)
     if m:
-        o["length"] = str(min(180, float(m.group(1)) * 60))
+        o["length"] = str(min(1800, float(m.group(1)) * 60))
     else:
         m = re.search(r"(\d+)\s*(?:-|\s)?(s|sec|secs|second|seconds)\b", t)
         if m:
-            o["length"] = str(min(180, max(5, int(m.group(1)))))
+            o["length"] = str(min(1800, max(5, int(m.group(1)))))
     # Pace
     if _has(t, "fast", "quick", "energetic", "hype", "upbeat", "fast-paced", "fast paced", "punchy"):
         o["style"] = "fast"
@@ -138,7 +138,7 @@ def clean(o: dict) -> dict:
             out[k] = v
         elif k == "length":
             try:
-                out[k] = str(min(180.0, max(5.0, float(v))))
+                out[k] = str(min(1800.0, max(5.0, float(v))))
             except (TypeError, ValueError):
                 pass
         elif k == "title" and isinstance(v, str):

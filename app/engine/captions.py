@@ -10,7 +10,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-FONTS_DIR = Path(__file__).resolve().parents[1] / "fonts"
+import os
+
+FONTS_DIR = Path(os.environ.get("EDITOR_FONTS") or Path(__file__).resolve().parents[1] / "fonts")
 
 # Font family for each font "role" and script (all fonts are in app/fonts).
 FONTS = {
@@ -102,8 +104,9 @@ def split_lines(segments: list[dict], width: int, height: int) -> list[dict]:
     return out
 
 
-def build_ass(segments: list[dict], style_id: str, width: int, height: int, position: str = "bottom",
-              duration: float | None = None) -> str:
+def _caption_parts(segments: list[dict], style_id: str, width: int, height: int, position: str = "bottom",
+                   duration: float | None = None) -> tuple[str, list[tuple[float, float, str]]]:
+    """The caption style line and the caption events (start, end, text)."""
     style = STYLES.get(style_id) or STYLES[DEFAULT_STYLE]
     _, _, role, text_c, hi_c, out_c, outline, shadow, box, caps = style["base"]
     anim = style["anim"]
@@ -118,20 +121,9 @@ def build_ass(segments: list[dict], style_id: str, width: int, height: int, posi
     border_style = 3 if box else 1
     # Karaoke: words start in the normal colour (Secondary) and switch to the highlight (Primary) as spoken.
     primary, secondary = (hi_c, text_c) if anim == "karaoke" else (text_c, hi_c)
-    header = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: {width}
-PlayResY: {height}
-WrapStyle: 0
-ScaledBorderAndShadow: yes
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Cap,{font},{size},{_ass_color(primary)},{_ass_color(secondary)},{_ass_color(out_c)},{_ass_color('000000', '80')},0,0,0,0,100,100,0,0,{border_style},{o},{sh},{align},{int(width * 0.06)},{int(width * 0.06)},{margin_v},1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
+    style_line = (f"Style: Cap,{font},{size},{_ass_color(primary)},{_ass_color(secondary)},{_ass_color(out_c)},"
+                  f"{_ass_color('000000', '80')},0,0,0,0,100,100,0,0,{border_style},{o},{sh},{align},"
+                  f"{int(width * 0.06)},{int(width * 0.06)},{margin_v},1")
     events = []
     for ln in lines:
         start, end = ln["start"], ln["end"]
@@ -150,8 +142,88 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                    + " ".join(words)
         else:
             text = "{\\fad(150,120)}" + " ".join(words)
-        events.append(f"Dialogue: 0,{_ts(start)},{_ts(end)},Cap,,0,0,0,,{text}")
-    return header + "\n".join(events) + "\n"
+        events.append((start, end, text))
+    return style_line, events
+
+
+def _header(width: int, height: int, styles: list[str]) -> str:
+    return f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {width}
+PlayResY: {height}
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+""" + "\n".join(styles) + """
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+
+def build_ass(segments: list[dict], style_id: str, width: int, height: int, position: str = "bottom",
+              duration: float | None = None) -> str:
+    style_line, events = _caption_parts(segments, style_id, width, height, position, duration)
+    return _header(width, height, [style_line]) + "\n".join(
+        f"Dialogue: 0,{_ts(a)},{_ts(b)},Cap,,0,0,0,,{t}" for a, b, t in events) + "\n"
+
+
+TEXT_FONT = {"latin": "Poppins ExtraBold", "deva": "Mukta ExtraBold", "guru": "Mukta Mahee ExtraBold"}
+
+
+class Overlay:
+    """Everything drawn on top of the finished video: title, text and captions.
+    It can be cut into pieces matching parts of the video (see `ass`)."""
+
+    def __init__(self, width: int, height: int):
+        self.width, self.height = width, height
+        u = min(width, height)
+        self.styles = [
+            f"Style: Title,Poppins ExtraBold,{int(u * 0.085)},&H00FFFFFF,&H00FFFFFF,&H99000000,&H80000000,"
+            f"0,0,0,0,100,100,0,0,1,{max(2, int(u * 0.005))},{max(1, int(u * 0.002))},5,"
+            f"{int(width * 0.06)},{int(width * 0.06)},0,1",
+            f"Style: Text,Poppins ExtraBold,{int(u * 0.062)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,"
+            f"0,0,0,0,100,100,0,0,3,{max(6, int(u * 0.012))},0,2,{int(width * 0.07)},{int(width * 0.07)},"
+            f"{int(height * 0.12)},1",
+        ]
+        self.events: list[tuple[float, float, str, str]] = []  # (start, end, style, text)
+
+    def add_title(self, text: str, duration: float = 3.0) -> None:
+        text = _escape(text.strip())
+        if text:
+            self.events.append((0.0, duration, "Title", f"{{\\fn{TEXT_FONT[script_of(text)]}\\fad(500,500)}}{text}"))
+
+    def add_text(self, text: str, start: float, end: float, position: str = "bottom") -> None:
+        text = _escape(text.strip())
+        if not text or end <= start:
+            return
+        an = {"top": 8, "middle": 5, "bottom": 2}.get(position, 2)
+        self.events.append((start, end, "Text", f"{{\\an{an}\\fn{TEXT_FONT[script_of(text)]}\\fad(200,200)}}{text}"))
+
+    def add_captions(self, segments: list[dict], style_id: str, position: str, duration: float) -> None:
+        style_line, events = _caption_parts(segments, style_id, self.width, self.height, position, duration)
+        self.styles = [x for x in self.styles if not x.startswith("Style: Cap,")] + [style_line]
+        self.events += [(a, b, "Cap", t) for a, b, t in events]
+
+    def empty(self, start: float = 0.0, end: float | None = None) -> bool:
+        return not any(b > start and (end is None or a < end) for a, b, _, _ in self.events)
+
+    def ass(self, start: float = 0.0, end: float | None = None) -> str:
+        """The ASS file for the stretch start..end of the video, with times made relative to start."""
+        lines = []
+        for a, b, style, text in self.events:
+            if b <= start or (end is not None and a >= end):
+                continue
+            a2, b2 = max(a, start) - start, (min(b, end) if end is not None else b) - start
+            if a < start:  # continues from the previous part: no second fade-in, karaoke carries on
+                text = re.sub(r"\\fad\((\d+),", r"\\fad(0,", text)
+                if "\\k" in text:
+                    text = "{\\k%d}" % round((start - a) * 100) + text
+            layer = {"Cap": 0, "Text": 1, "Title": 2}[style]
+            lines.append(f"Dialogue: {layer},{_ts(a2)},{_ts(b2)},{style},,0,0,0,,{text}")
+        return _header(self.width, self.height, self.styles) + "\n".join(lines) + "\n"
 
 
 def style_list() -> list[dict]:
@@ -160,12 +232,14 @@ def style_list() -> list[dict]:
 
 def snap_to_speech(lines: list[dict], audio: Path) -> list[dict]:
     """Nudges caption timing onto where speech actually starts/stops (AI timestamps can be a bit off)."""
-    import subprocess
-
     import numpy as np
-    res = subprocess.run(["ffmpeg", "-v", "error", "-i", str(audio), "-ac", "1", "-ar", "16000", "-f", "s16le", "-"],
-                         capture_output=True)
-    pcm = np.frombuffer(res.stdout[: len(res.stdout) // 2 * 2], dtype=np.int16).astype(np.float64) / 32768
+
+    from . import ff
+    try:
+        data = ff.raw(["-i", str(audio), "-ac", "1", "-ar", "16000", "-f", "s16le"])
+    except ff.FFError:
+        return lines
+    pcm = np.frombuffer(data[: len(data) // 2 * 2], dtype=np.int16).astype(np.float64) / 32768
     hop = 320  # 20 ms
     n = len(pcm) // hop
     if n < 10:
