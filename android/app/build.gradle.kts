@@ -37,7 +37,8 @@ android {
         // Compress the video and Python libraries inside the APK (smaller download).
         jniLibs { useLegacyPackaging = true }
     }
-    androidResources { noCompress += listOf("ttf", "otf") }
+    // The speech model is stored uncompressed so it can be copied out quickly (and openFd gives its size).
+    androidResources { noCompress += listOf("ttf", "otf", "onnx", "txt") }
 }
 
 chaquopy {
@@ -53,4 +54,6 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     // FFmpeg 8 built for Android, with captions (libass), x264 and the phone's hardware encoder.
     implementation("com.antonkarpenko:ffmpeg-kit-full-gpl:2.2.3")
+    // On-phone speech recognition for captions (downloaded by .github/scripts/prepare-android.sh).
+    implementation(files("libs/sherpa-onnx.aar"))
 }

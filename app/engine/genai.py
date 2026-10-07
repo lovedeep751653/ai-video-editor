@@ -1,8 +1,9 @@
-"""Google AI (Gemini API) connection: understands typed requests, creates
-pictures (Imagen / Gemini image models) and video clips (Veo) from a prompt.
+"""The app's thinking AI: understands typed requests and chat edits, looks at
+video frames and writes shot ideas.
 
-Needs a Google AI Studio API key. The best available model for each job is
-picked automatically from the models the key can use."""
+It uses a free public AI service that needs no key or account (key FREE).
+The Gemini-style requests built below are translated to that service's
+OpenAI-style chat format in _free_generate."""
 
 from __future__ import annotations
 
@@ -15,88 +16,95 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-BASE = os.environ.get("GENAI_BASE", "https://generativelanguage.googleapis.com/v1beta")
+from . import speech, translit
+
 TIMEOUT = 120
+FREE = "free"
+FREE_MODELS = {"text": "free"}
+FREE_TEXT = [b for b in os.environ.get("FREEAI_TEXT_BASES", "https://text.pollinations.ai/openai,"
+                                       "https://gen.pollinations.ai/v1/chat/completions").split(",") if b]
+UA = "AI-editor-open-source/1.0 (+https://github.com/lovedeep751653/ai-video-editor)"
 
 
 class AIError(Exception):
     pass
 
 
+def _schema(g: dict) -> dict:
+    """Gemini schema (type: OBJECT...) to standard JSON schema (type: object...)."""
+    out = {k: v for k, v in g.items() if k not in ("type", "properties", "items")}
+    if "type" in g:
+        out["type"] = g["type"].lower()
+    if "properties" in g:
+        out["properties"] = {k: _schema(v) for k, v in g["properties"].items()}
+    if "items" in g:
+        out["items"] = _schema(g["items"])
+    return out
+
+
+def _unfence(text: str) -> str:
+    t = text.strip()
+    m = re.match(r"^```(?:json)?\s*(.*?)\s*```$", t, re.S)
+    if m:
+        return m.group(1)
+    starts = [i for i in (t.find("{"), t.find("[")) if i >= 0]
+    return t[min(starts):] if starts and not t.startswith(("{", "[")) else t
+
+
+def _free_generate(body: dict, timeout) -> dict:
+    cfg = body.get("generationConfig") or {}
+    system = " ".join(p.get("text", "") for p in (body.get("systemInstruction") or {}).get("parts", []))
+    schema = cfg.get("responseSchema")
+    if schema:
+        system += ("\n\nAnswer with JSON only (no markdown, no explanation) that matches this JSON schema:\n"
+                   + json.dumps(_schema(schema)))
+    messages = [{"role": "system", "content": system.strip()}] if system.strip() else []
+    for c in body.get("contents", []):
+        parts = []
+        for p in c.get("parts", []):
+            if "text" in p:
+                parts.append({"type": "text", "text": p["text"]})
+            elif (p.get("inlineData") or {}).get("mimeType", "").startswith("image/"):
+                d = p["inlineData"]
+                parts.append({"type": "image_url", "image_url": {"url": f"data:{d['mimeType']};base64,{d['data']}"}})
+        if not parts:
+            continue
+        content = parts[0]["text"] if len(parts) == 1 and parts[0]["type"] == "text" else parts
+        messages.append({"role": "assistant" if c.get("role") == "model" else "user", "content": content})
+    req = {"model": "openai", "messages": messages, "private": True, "referrer": "ai-editor-open-source"}
+    if "temperature" in cfg:
+        req["temperature"] = cfg["temperature"]
+    if schema and schema.get("type") == "OBJECT":
+        req["response_format"] = {"type": "json_object"}
+    data = json.dumps(req).encode()
+    errors = []
+    for url in FREE_TEXT:
+        for attempt in range(3):
+            r = urllib.request.Request(url, data=data, method="POST",
+                                       headers={"Content-Type": "application/json", "User-Agent": UA})
+            try:
+                with urllib.request.urlopen(r, timeout=timeout) as resp:
+                    out = json.loads(resp.read() or b"{}")
+                text = ((out.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+                if text.strip():
+                    return {"candidates": [{"content": {"parts": [{"text": _unfence(text)}]}}]}
+                errors.append("empty answer")
+            except urllib.error.HTTPError as e:
+                errors.append(f"HTTP {e.code}")
+                if e.code == 429:
+                    time.sleep(16)
+                    continue
+                if e.code in (401, 402, 403, 404):
+                    break
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+                errors.append(str(getattr(e, "reason", e)))
+            time.sleep(2)
+    raise AIError("The free AI couldn't answer right now. Please check the internet connection. "
+                  f"({'; '.join(errors[-2:])})")
+
+
 def _request(key: str, method: str, url: str, body: dict | None = None, raw: bool = False, timeout=TIMEOUT):
-    if not url.startswith("http"):
-        url = f"{BASE}/{url.lstrip('/')}"
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method,
-                                 headers={"x-goog-api-key": key, "Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            payload = r.read()
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="replace")
-        try:
-            detail = json.loads(detail)["error"]["message"]
-        except Exception:
-            detail = detail[:300]
-        raise AIError(_friendly(e.code, detail)) from None
-    except urllib.error.URLError as e:
-        raise AIError(f"Couldn't reach Google AI ({e.reason}).") from None
-    return payload if raw else json.loads(payload or b"{}")
-
-
-def _friendly(code: int, detail: str) -> str:
-    low = detail.lower()
-    if "api key" in low or "api_key" in low or code == 401 or (code == 403 and "permission" in low):
-        return "Google AI refused the key. Please check it was copied fully. " + detail
-    if code == 429 or "quota" in low or "billing" in low:
-        return ("Google AI says this key has run out of free use or needs billing turned on for this feature. "
-                + detail)
-    return f"Google AI error: {detail}"
-
-
-def _version(name: str) -> tuple:
-    nums = re.findall(r"\d+(?:\.\d+)?", name)
-    return tuple(float(n) for n in nums[:2]) or (0.0,)
-
-
-def pick_models(models: list[dict]) -> dict:
-    """Chooses the best text, image and video model from what the key can use."""
-    def methods(m):
-        return set(m.get("supportedGenerationMethods") or m.get("supported_actions") or [])
-
-    names = [(m["name"].split("/", 1)[-1], methods(m)) for m in models if "name" in m]
-    bad_text = ("image", "tts", "live", "audio", "embedding", "aqa", "vision", "exp", "preview-tts", "robotics",
-                "computer", "nano", "gemma", "learnlm")
-    text = [n for n, ms in names if n.startswith("gemini") and "flash" in n and "generateContent" in ms
-            and not any(b in n for b in bad_text)]
-    imagen = [n for n, ms in names if n.startswith("imagen") and "predict" in ms]
-    gem_img = [n for n, ms in names if n.startswith("gemini") and "image" in n and "generateContent" in ms]
-    veo = [n for n, ms in names if n.startswith("veo") and "predictLongRunning" in ms]
-
-    def best(c, prefer=None):
-        if not c:
-            return None
-        return max(c, key=lambda n: (prefer(n) if prefer else 0, "preview" not in n, _version(n), -len(n)))
-
-    return {
-        "text": best(text, lambda n: "lite" not in n),
-        "image": best(imagen, lambda n: "ultra" not in n) or best(gem_img),
-        # "fast" Veo models cost much less per second and are still high quality.
-        "video": best(veo, lambda n: "fast" in n),
-    }
-
-
-def check_key(key: str) -> dict:
-    out, token = [], ""
-    for _ in range(10):
-        res = _request(key, "GET", f"models?pageSize=1000{'&pageToken=' + token if token else ''}", timeout=30)
-        out += res.get("models", [])
-        token = res.get("nextPageToken", "")
-        if not token:
-            break
-    if not out:
-        raise AIError("This key works but has no AI models available.")
-    return pick_models(out)
+    return _free_generate(body or {}, timeout)
 
 
 def _json_from(res: dict):
@@ -104,7 +112,7 @@ def _json_from(res: dict):
         text = "".join(p.get("text", "") for p in res["candidates"][0]["content"]["parts"])
         return json.loads(text)
     except Exception:
-        raise AIError("Google AI gave an answer that couldn't be understood.") from None
+        raise AIError("The AI gave an answer that couldn't be understood.") from None
 
 
 def interpret(key: str, model: str, request: str) -> dict:
@@ -160,105 +168,62 @@ def shot_ideas(key: str, model: str | None, idea: str, count: int) -> list[str]:
     return (shots + [idea] * count)[:count]
 
 
-def generate_image(key: str, model: str, prompt: str, aspect: str, out: Path) -> Path:
-    if model.startswith("imagen"):
-        res = _request(key, "POST", f"models/{model}:predict", {
-            "instances": [{"prompt": prompt}],
-            "parameters": {"sampleCount": 1, "aspectRatio": aspect},
-        })
-        preds = res.get("predictions") or []
-        if not preds or "bytesBase64Encoded" not in preds[0]:
-            raise AIError("No picture came back. The prompt may have been blocked by Google's safety rules.")
-        data, mime = preds[0]["bytesBase64Encoded"], preds[0].get("mimeType", "image/png")
-    else:
-        res = _request(key, "POST", f"models/{model}:generateContent", {
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": aspect}},
-        })
-        parts = ((res.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
-        img = next((p.get("inlineData") or p.get("inline_data") for p in parts
-                    if p.get("inlineData") or p.get("inline_data")), None)
-        if not img:
-            raise AIError("No picture came back. The prompt may have been blocked by Google's safety rules.")
-        data, mime = img["data"], img.get("mimeType") or img.get("mime_type") or "image/png"
-    out = out.with_suffix(".jpg" if "jpeg" in mime else ".png")
-    out.write_bytes(base64.b64decode(data))
-    return out
+LANG_NAMES = {"en": "natural English", "hi": "Hindi written in Devanagari script",
+              "pa": "Punjabi written in Gurmukhi script"}
 
 
-def generate_video(key: str, model: str, prompt: str, aspect: str, out: Path, progress=None,
-                   max_wait: float = 900) -> Path:
-    aspect = aspect if aspect in ("16:9", "9:16") else "16:9"  # Veo makes wide or tall clips
-    op = _request(key, "POST", f"models/{model}:predictLongRunning", {
-        "instances": [{"prompt": prompt}],
-        "parameters": {"aspectRatio": aspect},
-    })
-    name = op.get("name")
-    if not name:
-        raise AIError("Google AI didn't start the video.")
-    started = time.time()
-    while not op.get("done"):
-        if time.time() - started > max_wait:
-            raise AIError("The AI video took too long to make. Please try again.")
-        if progress:
-            progress(min(0.95, (time.time() - started) / 120))  # Veo usually takes 1–3 minutes
-        time.sleep(8)
-        op = _request(key, "GET", name)
-    if op.get("error"):
-        raise AIError(f"Google AI couldn't make this video: {op['error'].get('message', 'unknown reason')}")
-    resp = op.get("response") or {}
-    samples = (resp.get("generateVideoResponse") or {}).get("generatedSamples") or resp.get("generatedVideos") or []
-    if not samples:
-        reasons = (resp.get("generateVideoResponse") or {}).get("raiMediaFilteredReasons")
-        raise AIError("No video came back." + (f" Reason: {reasons[0]}" if reasons else
-                                                " The prompt may have been blocked by Google's safety rules."))
-    video = samples[0].get("video") or {}
-    if video.get("bytesBase64Encoded"):
-        out.write_bytes(base64.b64decode(video["bytesBase64Encoded"]))
-    elif video.get("uri"):
-        out.write_bytes(_request(key, "GET", video["uri"], raw=True, timeout=300))
-    else:
-        raise AIError("The AI video couldn't be downloaded.")
-    if progress:
-        progress(1.0)
-    return out
+def translate_lines(texts: list[str], lang: str) -> list[str]:
+    """Translates caption lines with the free AI, keeping one line per line."""
+    schema = {"type": "ARRAY", "items": {"type": "STRING"}}
+    prompt = (f"Translate each of these {len(texts)} video caption lines into {LANG_NAMES[lang]}. Keep them short "
+              "and natural. Return a JSON array with exactly one translated string per line, in the same order.\n\n"
+              + json.dumps(texts, ensure_ascii=False))
+    res = _request(FREE, "POST", "models/free:generateContent", {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema, "temperature": 0},
+    }, timeout=180)
+    out = _json_from(res)
+    if not isinstance(out, list) or len(out) != len(texts):
+        raise AIError("The AI translation didn't match the captions.")
+    return [str(x).strip() or t for x, t in zip(out, texts)]
 
 
-LANG_RULES = {
-    "auto": "Write each line in the language it is spoken in: Hindi in Devanagari script, Punjabi in Gurmukhi "
-            "script, English in English. Keep mixed-language (Hinglish) speech as spoken.",
-    "en": "Translate everything into natural English.",
-    "hi": "Write everything in Hindi using Devanagari script (translate if spoken in another language).",
-    "pa": "Write everything in Punjabi using Gurmukhi script (translate if spoken in another language).",
-    "hinglish": "Write everything in Hinglish: Hindi/Punjabi words written in Roman (English) letters, "
-                "English words as they are.",
-}
+def convert_lines(lines: list[dict], lang: str) -> list[dict]:
+    """Puts recognised speech into the caption language the user picked."""
+    if not lines:
+        return lines
+    main = translit.script_of(" ".join(ln["text"] for ln in lines))
+    if lang == "hinglish":
+        return [{**ln, "text": translit.romanize(ln["text"])} for ln in lines]
+    if lang == "auto":
+        if main in ("ur", "hi") or any(translit.ARABIC.search(ln["text"]) for ln in lines):
+            return [{**ln, "text": translit.to_script(ln["text"], "hi")} for ln in lines]
+        return lines
+    needs_ai = (lang == "en" and main != "en") or (lang in ("hi", "pa") and main == "en")
+    if lang in ("hi", "pa") and main in ("hi", "pa", "ur") and main != lang:
+        needs_ai = True
+    if needs_ai:
+        out = []
+        for i in range(0, len(lines), 40):
+            part = lines[i:i + 40]
+            try:
+                texts = translate_lines([ln["text"] for ln in part], lang)
+            except AIError:
+                texts = [ln["text"] if lang == "en" else translit.to_script(ln["text"], lang) for ln in part]
+            out += [{**ln, "text": t} for ln, t in zip(part, texts)]
+        lines = out
+    if lang in ("hi", "pa"):
+        lines = [{**ln, "text": translit.to_script(ln["text"], lang)} for ln in lines]
+    return lines
 
 
 def transcribe(key: str, model: str, audio: Path, lang: str = "auto") -> list[dict]:
-    """Listens to the speech and returns timed caption lines [{start, end, text}] in seconds."""
-    data = base64.b64encode(audio.read_bytes()).decode()
-    schema = {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
-        "start": {"type": "NUMBER"}, "end": {"type": "NUMBER"}, "text": {"type": "STRING"}},
-        "required": ["start", "end", "text"]}}
-    prompt = ("Create subtitles for the speech in this audio. Return short lines (at most about 8 words each) "
-              "with start and end times in seconds from the beginning of the audio, as precise as possible. "
-              "Only include actual spoken words or sung lyrics; ignore music without words and background noise. "
-              "If nobody speaks, return an empty list. " + LANG_RULES.get(lang, LANG_RULES["auto"]))
-    res = _request(key, "POST", f"models/{model}:generateContent", {
-        "contents": [{"role": "user", "parts": [
-            {"inlineData": {"mimeType": "audio/mp3", "data": data}}, {"text": prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema, "temperature": 0},
-    }, timeout=300)
-    lines = []
-    for s in _json_from(res) or []:
-        try:
-            start, end, text = float(s["start"]), float(s["end"]), str(s["text"]).strip()
-        except (KeyError, TypeError, ValueError):
-            continue
-        if text and end > start >= 0:
-            lines.append({"start": start, "end": end, "text": text})
-    return sorted(lines, key=lambda x: x["start"])
+    """Listens to the speech (on the phone) and returns timed caption lines [{start, end, text}] in seconds."""
+    try:
+        lines = speech.transcribe(audio)
+    except speech.SpeechError as e:
+        raise AIError(str(e)) from None
+    return convert_lines(lines, lang)
 
 
 # ---------------------------------------------------------------- chat editing
@@ -344,7 +309,7 @@ def edit_chat(key: str, model: str, context: dict, message: str, history: list[d
     }, timeout=180)
     out = _json_from(res)
     if not isinstance(out, dict):
-        raise AIError("Google AI gave an answer that couldn't be understood.")
+        raise AIError("The AI gave an answer that couldn't be understood.")
     ops = [o for o in (out.get("operations") or []) if isinstance(o, dict) and o.get("op") in EDIT_OPS]
     return {"reply": str(out.get("reply") or "").strip(), "operations": ops}
 

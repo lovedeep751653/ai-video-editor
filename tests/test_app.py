@@ -103,19 +103,21 @@ def main():
        "s=44100:d=40", "-c:a", "libmp3lame", str(mus))
 
     ai = subprocess.Popen([sys.executable, str(HERE / "mock_gemini.py"), str(PORT_AI)])
-    env = {**os.environ, "GENAI_BASE": f"http://127.0.0.1:{PORT_AI}/v1beta", "APP_PASSWORD": "1234",
+    env = {**os.environ, "FREEAI_TEXT_BASES": f"http://127.0.0.1:{PORT_AI}/free/openai", "APP_PASSWORD": "1234",
+           "SPEECH_FAKE": json.dumps({"text": "ਸਤ ਸ੍ਰੀ ਅਕਾਲ ਦੋਸਤੋ ਅੱਜ ਅਸੀਂ ਪਹਾੜਾਂ ਵਿੱਚ ਹਾਂ"}),
+           "FREEAI_BASES": f"http://127.0.0.1:{PORT_AI}/free/prompt/", "FREEAI_HORDE": "http://127.0.0.1:9/none",
            "EDITOR_DATA": str(data)}
     env.update(HOST="127.0.0.1", PORT=str(PORT_APP))
     app = subprocess.Popen([sys.executable, "server.py"], cwd=HERE.parent / "app", env=env,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        for url, check in ((f"http://127.0.0.1:{PORT_AI}/v1beta/models", False), (BASE + "/api/health", True)):
+        for url, check in ((f"http://127.0.0.1:{PORT_AI}/free/health", False), (BASE + "/api/health", True)):
             for _ in range(80):
                 try:
                     urllib.request.urlopen(url, timeout=2)
                     break
                 except urllib.error.HTTPError:
-                    break  # answered (400 without a key) → it is up
+                    break  # answered → it is up
                 except Exception:
                     time.sleep(0.5)
             else:
@@ -127,14 +129,9 @@ def main():
         assert post_json("/api/login", {"code": "1234"})[0] == 200
         assert get("/api/settings")[0] == 200
 
-        # Google AI key
-        code, res = post_json("/api/settings", {"gemini_key": "bad"})
-        assert code == 400 and "key" in res["detail"].lower(), res
-        code, res = post_json("/api/settings", {"gemini_key": "test-key-123"})
-        assert code == 200 and res["ai_ready"], res
-        assert res["models"]["image"] == "imagen-4.0-generate-001", res["models"]
-        assert res["models"]["video"] == "veo-3.0-fast-generate-001", res["models"]
-        assert res["models"]["text"] == "gemini-2.5-flash", res["models"]
+        # No key anywhere: settings are only quality and speed
+        code, res = get("/api/settings")
+        assert code == 200 and set(res) == {"quality", "speed"}, res
 
         # Adding files
         code, res = post("/api/sources", {}, [("files", land), ("files", photo), ("files", talk), ("files", mus),
@@ -204,13 +201,15 @@ def main():
         p = get(f"/api/projects/{pid}")[1]
         assert p["version"] == 5 and p["chat"][-1]["text"].startswith("Done"), p["chat"][-1]
 
-        # Without a key the chat still understands the common commands
-        assert not post_json("/api/settings", {"gemini_key": ""})[1]["ai_ready"]
+        # Offline the chat still understands the common commands
+        offline = lambda on: urllib.request.urlopen(urllib.request.Request(  # noqa: E731
+            f"http://127.0.0.1:{PORT_AI}/free/offline", data=json.dumps({"on": on}).encode(), method="POST"))
+        offline(True)
         p = chat("remove clip 1 and make it black and white")
         assert p["plan"]["look"] == "bw" and p["version"] == 6, p["chat"][-1]
         p = chat("tell me a joke")
-        assert "Google AI key" in p["chat"][-1]["text"]
-        assert post_json("/api/settings", {"gemini_key": "test-key-123"})[1]["ai_ready"]
+        assert "Without internet" in p["chat"][-1]["text"], p["chat"][-1]
+        offline(False)
 
         # Cancelling
         code, res = post_json("/api/projects", {"sources": [src["talk.mp4"]["id"]], "mode": "highlight"})
@@ -253,6 +252,17 @@ def main():
             code, png = get(f"/api/caption-preview/{res['styles'][0]['id']}?lang={lang}")
             assert code == 200 and len(png) > 2000, f"preview failed for {lang}"
         assert get("/api/caption-preview/not-a-style")[0] == 404
+        # More free AI pictures and video clips
+        code, res = post_json("/api/create", {"mode": "image", "prompt": "a sunset", "format": "16:9", "count": 1})
+        assert code == 200, res
+        files = wait(res["job"])["result"]["files"]
+        assert len(files) == 1 and files[0]["kind"] == "image" and get(files[0]["url"])[0] == 200, files
+        code, res = post_json("/api/create", {"mode": "video", "prompt": "a kite festival", "format": "9:16", "count": 2})
+        assert code == 200, res
+        files = wait(res["job"], 600)["result"]["files"]
+        assert len(files) == 2 and all(f["kind"] == "video" for f in files), files
+        code, mp4 = get(files[1]["url"])
+        assert code == 200 and len(mp4) > 50_000, len(mp4)
         print("all app tests passed")
     finally:
         app.terminate()

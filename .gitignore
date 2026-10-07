@@ -8,3 +8,5 @@ android/.gradle/
 android/app/build/
 android/build/
 out/
+android/app/libs/
+android/app/src/main/assets/speech/

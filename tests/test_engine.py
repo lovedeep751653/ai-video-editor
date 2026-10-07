@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
-from engine import captions, edits, intent, music, pipeline, render  # noqa: E402
+from engine import captions, edits, genai, intent, music, pipeline, render  # noqa: E402
 from engine.plan import Plan  # noqa: E402
 
 
@@ -65,7 +65,7 @@ def run_case(s, files, opts, work, music_path=None, mode="highlight"):
              "music": {"path": str(music_path), "name": music_path.name} if music_path else None,
              "settings": {"captions": opts.get("captions", "off"), "caption_lang": "auto",
                           "caption_style": captions.DEFAULT_STYLE, "caption_pos": "bottom"}}
-    ver, media = pipeline.first_edit(state, work, lambda st, f: stages.append(f), ("", {}), "best", opts)
+    ver, media = pipeline.first_edit(state, work, lambda st, f: stages.append(f), (genai.FREE, genai.FREE_MODELS), "best", opts)
     assert stages == sorted(stages), "progress must only go up"
     assert stages[-1] == 1.0
     r = {**ver["plan"], "skipped": state["skipped"], "total": ver["duration"], "state": state, "media": media,
@@ -117,9 +117,9 @@ def test_all():
         r, v = run_case(s, ["land", "port"], {"transitions": "cuts", "style": "fast", "length": "10"}, t / "cuts")
         assert r["transition"] == 0 and abs(v["dur"] - r["total"]) < 0.3
 
-        # Captions without an AI key: says so instead of failing
+        # Captions when no speech can be heard: says so instead of failing
         r, v = run_case(s, ["land"], {"captions": "on", "length": "8"}, t / "nocap")
-        assert any("Google AI key" in n for n in r["notes"])
+        assert any("caption" in n.lower() for n in r["notes"]), r["notes"]
 
         # Nothing usable → clear error
         try:

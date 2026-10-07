@@ -140,6 +140,27 @@ def _selftest(folder: str, saf_path: str, port: int, token: str) -> None:
         check("captions_render", prev.get("bytes", 0) > 2000, str(prev))
         prev = call("GET", "/api/caption-preview/classic-simple?lang=hi")
         check("captions_render_hindi", prev.get("bytes", 0) > 2000, str(prev))
+        from pathlib import Path
+
+        from engine import genai, speech
+        t0 = time.time()
+        lines = speech.transcribe(Path(str(speech._android_bridge().selftestWav())))
+        heard = " ".join(ln["text"] for ln in lines)
+        check("speech_captions", "country" in heard.lower(), f"{time.time() - t0:.1f}s {heard!r}")
+        try:
+            o = genai.interpret(genai.FREE, "free", "make it vertical with a vintage look and a title 'Goa'")
+            _say(f"INFO free_ai_text ok={o.get('format') == '9:16'} {o}")
+        except Exception as e:  # noqa: BLE001
+            _say(f"INFO free_ai_text ok=False {e}")
+        # Free AI (no key, real internet): reported only, so an outside service outage can't block a release.
+        try:
+            res = call("POST", "/api/create", {"mode": "video", "prompt": "colourful kites over a village at sunset",
+                                               "format": "9:16", "count": 1})
+            j = wait(res.get("job", "x"), 900) if res.get("job") else res
+            files = (j.get("result") or {}).get("files") or []
+            _say(f"INFO free_ai_video ok={j.get('state') == 'done' and bool(files)} {j.get('error') or ''} {files}")
+        except Exception as e:  # noqa: BLE001
+            _say(f"INFO free_ai_video ok=False {e}")
     except Exception:
         _say("FAIL crashed " + traceback.format_exc().replace("\n", " | "))
         results["crash"] = False

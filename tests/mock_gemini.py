@@ -1,8 +1,9 @@
-"""A stand-in for Google's AI service, used only by tests. It answers the same
-requests the real service does, with real picture/video files, so the whole
-AI flow can be checked without spending money. Run: python3 mock_gemini.py PORT"""
+"""A stand-in for the free AI services the app uses, used only by tests. It
+answers the same requests the real services do (OpenAI-style chat for the
+thinking AI, a picture for the picture AI), so the whole AI flow can be
+checked offline. POST /free/offline {"on": true} makes it act unreachable.
+Run: python3 mock_gemini.py PORT"""
 
-import base64
 import json
 import subprocess
 import sys
@@ -10,27 +11,11 @@ import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-KEY = "test-key-123"
 TMP = Path(tempfile.mkdtemp())
 subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=768x1344", "-frames:v", "1",
                 str(TMP / "img.png")], check=True)
-subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "mandelbrot=s=720x1280:r=24", "-f", "lavfi",
-                "-i", "sine=f=330", "-t", "8", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", str(TMP / "vid.mp4")], check=True)
-IMG = base64.b64encode((TMP / "img.png").read_bytes()).decode()
-OPS = {}
 LOG = []
-
-MODELS = [
-    {"name": "models/gemini-2.5-flash", "supportedGenerationMethods": ["generateContent"]},
-    {"name": "models/gemini-2.5-flash-lite", "supportedGenerationMethods": ["generateContent"]},
-    {"name": "models/gemini-2.5-flash-image", "supportedGenerationMethods": ["generateContent"]},
-    {"name": "models/gemini-2.5-flash-preview-tts", "supportedGenerationMethods": ["generateContent"]},
-    {"name": "models/imagen-4.0-generate-001", "supportedGenerationMethods": ["predict"]},
-    {"name": "models/imagen-4.0-ultra-generate-001", "supportedGenerationMethods": ["predict"]},
-    {"name": "models/veo-3.0-generate-001", "supportedGenerationMethods": ["predictLongRunning"]},
-    {"name": "models/veo-3.0-fast-generate-001", "supportedGenerationMethods": ["predictLongRunning"]},
-]
+STATE = {"offline": False}
 
 
 def chat_answer(text: str) -> dict:
@@ -55,6 +40,37 @@ def chat_answer(text: str) -> dict:
     return {"reply": "Could you say that another way?", "operations": []}
 
 
+def answer(system: str, parts: list[dict]) -> str:
+    """The AI's text answer for one request (parts: the last user message, Gemini-style)."""
+    if "editor inside a phone video-editing app" in system:  # chat editing
+        return json.dumps(chat_answer(parts[0]["text"]))
+    if any(p_.get("image") for p_ in parts):  # looking at frames
+        times = [float(p_["text"][2:-1]) for p_ in parts if p_.get("text", "").startswith("t=")]
+        return json.dumps([{"time": t, "text": "a colourful test pattern" if t < 6 else "a red dog on a beach"}
+                           for t in times])
+    text = parts[0]["text"]
+    if "camera shot descriptions" in text:
+        return json.dumps(["A wide shot of the scene", "A close-up detail", "A slow pan at sunset"])
+    if "Translate each of these" in text:
+        lines = json.loads(text[text.index("["):])
+        return json.dumps([f"(en) {x}" for x in lines], ensure_ascii=False)
+    if "Request:" in text:
+        # Stand-in "understanding": echo back whichever words appear in the request.
+        req = text.split("Request:", 1)[1].lower()
+        o = {"format": "auto", "length": 0, "style": "auto", "look": "auto", "transitions": "auto",
+             "slowmo": "auto", "title": "", "captions": "auto", "caption_lang": "auto"}
+        for word, key, val in [("wide", "format", "16:9"), ("vertical", "format", "9:16"),
+                               ("square", "format", "1:1"), ("cinematic", "look", "cinematic"),
+                               ("vintage", "look", "vintage"), ("fast", "style", "fast"),
+                               ("slow motion", "slowmo", "on"), ("subtitle", "captions", "on"),
+                               ("caption", "captions", "on"), ("punjabi", "caption_lang", "pa"),
+                               ("hindi", "caption_lang", "hi")]:
+            if word in req:
+                o[key] = val
+        return "```json\n" + json.dumps(o) + "\n```"  # real services sometimes wrap JSON like this
+    return "I don't know."
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -67,80 +83,30 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _auth(self):
-        if self.headers.get("x-goog-api-key") != KEY:
-            self._send(400, {"error": {"code": 400, "message": "API key not valid. Please pass a valid API key."}})
-            return False
-        return True
-
     def do_GET(self):
         LOG.append(("GET", self.path))
-        if not self._auth():
-            return
-        p = self.path.split("?")[0]
-        if p.endswith("/models"):
-            return self._send(200, {"models": MODELS})
-        if "/operations/" in p:
-            n = OPS[p.split("/operations/")[1]] = OPS.get(p.split("/operations/")[1], 0) + 1
-            if n < 2:
-                return self._send(200, {"name": p, "done": False})
-            port = self.server.server_address[1]
-            return self._send(200, {"name": p, "done": True, "response": {"generateVideoResponse": {
-                "generatedSamples": [{"video": {"uri": f"http://127.0.0.1:{port}/v1beta/files/v1:download?alt=media"}}]}}})
-        if "/files/" in p:
-            return self._send(200, raw=(TMP / "vid.mp4").read_bytes(), ctype="video/mp4")
-        self._send(404, {"error": {"message": "not found"}})
+        if STATE["offline"]:
+            return self._send(503, {"error": "offline"})
+        if self.path.startswith("/free/prompt/"):
+            return self._send(200, raw=(TMP / "img.png").read_bytes(), ctype="image/png")
+        self._send(200 if self.path == "/free/health" else 404, {"ok": True})
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         LOG.append(("POST", self.path, body))
-        if not self._auth():
-            return
-        p = self.path
-        if p.endswith(":predict"):
-            return self._send(200, {"predictions": [{"bytesBase64Encoded": IMG, "mimeType": "image/png"}]})
-        if p.endswith(":predictLongRunning"):
-            op = f"op{len(OPS) + 1}"
-            OPS[op] = 0
-            model = p.split("/models/")[1].split(":")[0]
-            return self._send(200, {"name": f"models/{model}/operations/{op}"})
-        if p.endswith(":generateContent"):
-            cfg = body.get("generationConfig", {})
-            parts = body["contents"][-1]["parts"]
-            if "systemInstruction" in body:  # chat editing
-                return self._send(200, {"candidates": [{"content": {"parts": [{"text": json.dumps(
-                    chat_answer(parts[0]["text"]))}]}}]})
-            if any(p_.get("inlineData", {}).get("mimeType") == "image/jpeg" for p_ in parts):  # looking at frames
-                times = [float(p_["text"][2:-1]) for p_ in parts if p_.get("text", "").startswith("t=")]
-                return self._send(200, {"candidates": [{"content": {"parts": [{"text": json.dumps(
-                    [{"time": t, "text": "a colourful test pattern" if t < 6 else "a red dog on a beach"}
-                     for t in times])}]}}]})
-            if "inlineData" in parts[0] and parts[0]["inlineData"]["mimeType"].startswith("audio"):
-                out = json.dumps([{"start": 0.4, "end": 2.6, "text": "ਸਤ ਸ੍ਰੀ ਅਕਾਲ ਦੋਸਤੋ, ਅੱਜ ਅਸੀਂ ਪਹਾੜਾਂ ਵਿੱਚ ਹਾਂ"},
-                                  {"start": 3.0, "end": 5.5, "text": "यह नज़ारा बहुत सुंदर है"},
-                                  {"start": 6.0, "end": 8.0, "text": "This is the best trip ever"}])
-                return self._send(200, {"candidates": [{"content": {"parts": [{"text": out}]}}]})
-            text = parts[0]["text"]
-            if cfg.get("responseSchema", {}).get("type") == "ARRAY":
-                out = json.dumps(["A wide shot of the scene", "A close-up detail", "A slow pan at sunset"])
-            elif "Request:" in text:
-                # Stand-in "understanding": echo back whichever words appear in the request.
-                req = text.split("Request:", 1)[1].lower()
-                o = {"format": "auto", "length": 0, "style": "auto", "look": "auto", "transitions": "auto",
-                     "slowmo": "auto", "title": "", "captions": "auto", "caption_lang": "auto"}
-                for word, key, val in [("wide", "format", "16:9"), ("vertical", "format", "9:16"),
-                                       ("square", "format", "1:1"), ("cinematic", "look", "cinematic"),
-                                       ("vintage", "look", "vintage"), ("fast", "style", "fast"),
-                                       ("slow motion", "slowmo", "on"), ("subtitle", "captions", "on"),
-                                       ("caption", "captions", "on"), ("punjabi", "caption_lang", "pa"),
-                                       ("hindi", "caption_lang", "hi")]:
-                    if word in req:
-                        o[key] = val
-                out = json.dumps(o)
-            else:
-                return self._send(200, {"candidates": [{"content": {"parts": [
-                    {"inlineData": {"mimeType": "image/png", "data": IMG}}]}}]})
-            return self._send(200, {"candidates": [{"content": {"parts": [{"text": out}]}}]})
+        if self.path == "/free/offline":
+            STATE["offline"] = bool(body.get("on"))
+            return self._send(200, {"ok": True})
+        if STATE["offline"]:
+            return self._send(503, {"error": "offline"})
+        if self.path == "/free/openai":
+            msgs = body["messages"]
+            system = " ".join(m["content"] for m in msgs if m["role"] == "system")
+            last = msgs[-1]["content"]
+            parts = [{"text": last}] if isinstance(last, str) else [
+                {"text": c["text"]} if c["type"] == "text" else {"image": True} for c in last]
+            return self._send(200, {"choices": [{"message": {"role": "assistant",
+                                                             "content": answer(system, parts)}}]})
         self._send(404, {"error": {"message": "not found"}})
 
 

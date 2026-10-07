@@ -1,9 +1,8 @@
 """Understands a typed request such as "make it cinematic, 30 seconds, vertical,
 smooth transitions, title 'Goa 2026'" and turns it into editing options.
 
-Works without any AI service using a built-in phrase list. When a Google AI key
-is set up, the request is first sent to Gemini, which understands free-form
-wording far better; the phrase list is the fallback."""
+The request is first sent to the free AI (genai.interpret), which understands
+free-form wording; this built-in phrase list is the fallback without internet."""
 
 from __future__ import annotations
 

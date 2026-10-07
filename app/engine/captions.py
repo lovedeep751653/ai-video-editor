@@ -1,7 +1,7 @@
 """Captions (subtitles) burned into the video: 45 styles, in English, Hindi
 (Devanagari) and Punjabi (Gurmukhi) scripts, with fonts bundled in app/fonts.
 
-The words and their timing come from Google AI listening to the speech
+The words and their timing come from on-phone speech recognition (speech.py) listening to the speech
 (see genai.transcribe). This file turns those timed lines into a styled ASS
 subtitle file that FFmpeg draws onto the video."""
 

@@ -20,7 +20,7 @@ from . import analyze, captions, edits, ff, genai, music as music_mod, plan as p
 from .analyze import Media
 from .plan import Plan
 
-CHUNK = 240.0  # seconds of speech sent to Google AI at a time (keeps timing precise)
+CHUNK = 240.0  # seconds of speech listened to at a time
 
 
 # ---------------------------------------------------------------- files
@@ -163,8 +163,6 @@ def ensure_transcript(state: dict, plan: Plan, media: dict[int, Media], ai: tupl
     if _uncovered(need, tr["coverage"]) < 2.0:
         state["transcript"] = tr
         return []
-    if not (key and models.get("text")):
-        return ["Captions need a Google AI key (add one in Settings)"]
     report("Listening to the speech for captions", lo)
     speech = work / "speech.mp3"
     total = render.speech_track(plan, media, speech)
@@ -341,7 +339,7 @@ def ensure_scenes(state: dict, media: dict[int, Media], ai, work: Path, report) 
         try:
             scenes[str(i)] = genai.describe_frames(key, models["text"], stamps)
         except genai.AIError:
-            scenes[str(i)] = []
+            pass  # offline: try again on the next message
         for f in frames:
             f.unlink(missing_ok=True)
 
@@ -364,7 +362,7 @@ def chat(state: dict, plan: Plan, media: dict[int, Media], message: str, ai, wor
         except genai.AIError as e:
             ops, ok = edits.parse_local(message, plan)
             if not ok:
-                return f"I couldn't reach Google AI ({e}). " + edits.LOCAL_HELP, None, False
+                return f"I couldn't reach the AI ({e}). " + edits.LOCAL_HELP, None, False
             answer = {"reply": "", "operations": ops}
     else:
         ops, ok = edits.parse_local(message, plan)

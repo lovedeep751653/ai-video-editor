@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from engine import analyze, captions, edits, ff, genai, intent, pipeline, render
+from engine import analyze, captions, edits, ff, freeai, genai, intent, pipeline, render
 from engine.effects import LOOK_NAMES
 from engine.plan import FORMATS, Plan
 
@@ -80,17 +80,7 @@ def save_settings(s: dict) -> None:
 
 
 def ai() -> tuple[str, dict]:
-    s = settings()
-    key = os.environ.get("GEMINI_API_KEY") or s.get("gemini_key", "")
-    models = s.get("models") or {}
-    if key and not models:
-        try:
-            models = genai.check_key(key)
-            s["models"] = models
-            save_settings(s)
-        except genai.AIError:
-            models = {}
-    return key, models
+    return genai.FREE, genai.FREE_MODELS
 
 
 def quality() -> str:
@@ -102,10 +92,7 @@ def speed() -> str:
 
 
 def settings_view() -> dict:
-    key, models = ai()
-    return {"ai_ready": bool(key and models), "key_hint": ("…" + key[-4:]) if key else "",
-            "can_text": bool(models.get("text")), "can_image": bool(models.get("image")),
-            "can_video": bool(models.get("video")), "models": models, "quality": quality(), "speed": speed()}
+    return {"quality": quality(), "speed": speed()}
 
 
 # ================================================================ jobs
@@ -162,7 +149,7 @@ def submit(jid: str, fn, on_fail=None) -> None:
                 on_fail("Cancelled")
         except Exception as e:  # tell the user the real reason
             traceback.print_exc()
-            known = (ValueError, genai.AIError, render.RenderError, ff.FFError, HTTPError)
+            known = (ValueError, genai.AIError, freeai.FreeAIError, render.RenderError, ff.FFError, HTTPError)
             msg = (e.detail if isinstance(e, HTTPError) else str(e)) if isinstance(e, known) else \
                 f"Something went wrong: {e}"
             update_job(jid, state="failed", error=msg, stage="Failed")
@@ -454,18 +441,16 @@ def _options(raw: dict, mode: str) -> dict:
 
 
 def _understand(request: str, report) -> tuple[dict, list[str]]:
-    """Typed wishes → options. Google AI when set up, else the built-in phrase list."""
+    """Typed wishes → options. The free AI when reachable, else the built-in phrase list."""
     if not request.strip():
         return {}, []
     key, models = ai()
-    if key and models.get("text"):
-        report("Reading your request", 0.0)
-        try:
-            return intent.clean(genai.interpret(key, models["text"], request)), []
-        except genai.AIError as e:
-            return intent.clean(intent.parse_keywords(request)), [
-                f"Google AI couldn't read the request ({e}); used the built-in understanding instead"]
-    return intent.clean(intent.parse_keywords(request)), []
+    report("Reading your request", 0.0)
+    try:
+        return intent.clean(genai.interpret(key, models["text"], request)), []
+    except genai.AIError as e:
+        return intent.clean(intent.parse_keywords(request)), [
+            f"The AI couldn't be reached ({e}); used the built-in understanding instead"]
 
 
 def create_project(body: dict) -> dict:
@@ -521,9 +506,7 @@ def create_project(body: dict) -> dict:
             opts = {**st["options"], **typed}
             has_speech = any((_source_meta(s["id"]) or {}).get("has_audio") for s in st["sources"])
             cap = opts.get("captions", "auto")
-            key, models = ai()
-            st["settings"]["captions"] = "on" if cap == "on" or (cap == "auto" and has_speech and key and
-                                                                  models.get("text")) else "off"
+            st["settings"]["captions"] = "on" if cap == "on" or (cap == "auto" and has_speech) else "off"
             if typed.get("caption_lang"):
                 st["settings"]["caption_lang"] = typed["caption_lang"]
             st["options"] = opts
@@ -532,8 +515,6 @@ def create_project(body: dict) -> dict:
             ver, _ = pipeline.first_edit(st, PROJECTS / pid, report, ai(), speed(), opts)
             st["current"] = ver["n"]
             ver["plan"]["notes"] = notes + ver["plan"]["notes"]
-            if cap == "auto" and has_speech and not (key and models.get("text")):
-                ver["plan"]["notes"].append("Captions can be added once a Google AI key is set in Settings")
             st["state"], st["error"] = "ready", None
             _chat_add(st, "assistant", _first_message(st, ver), ver["n"])
             save_project(st)
@@ -743,17 +724,27 @@ def create_ai(body: dict) -> dict:
     if fmt not in FORMATS:
         raise HTTPError(400, "Unknown shape.")
     key, models = ai()
-    if not key:
-        raise HTTPError(400, "AI creation needs a Google AI key. Open Settings to add one.")
     need = "video" if mode == "video" or (mode == "story" and source == "clips") else "image"
-    if not models.get(need):
-        raise HTTPError(400, f"Your Google AI key can't make {'videos' if need == 'video' else 'pictures'}. "
-                             "This usually means billing isn't turned on for it in Google AI Studio.")
     count = max(1, min(count, 3 if need == "video" else 8))
     jid = new_job(mode)
     work_dir = CREATIONS / jid
     work_dir.mkdir(parents=True)
     share = 0.6 if mode == "story" else 1.0
+
+    def clip(i, p, out, prog):
+        pic = freeai.generate_image(p, fmt, work_dir / f"ai_still_{i + 1}")
+        prog(0.7)
+        try:
+            return freeai.motion_clip(pic, fmt, out, freeai.MOVES[i % len(freeai.MOVES)], quality=quality(),
+                                      speed=speed(), progress=lambda x: prog(0.7 + 0.3 * x))
+        finally:
+            pic.unlink(missing_ok=True)
+
+    def ideas(n):
+        if n == 1:
+            return [prompt]
+        shots = genai.shot_ideas(key, models["text"], prompt, n)
+        return shots if len(set(shots)) > 1 else freeai.shot_prompts(prompt, n)
 
     def make(report, prompts):
         files = []
@@ -762,10 +753,10 @@ def create_ai(body: dict) -> dict:
             base = i / len(prompts)
             report(label, base * share)
             if need == "video":
-                f = genai.generate_video(key, models["video"], p, fmt, work_dir / f"ai_clip_{i + 1}.mp4",
-                                         lambda x: report(label, (base + x / len(prompts)) * share))
+                f = clip(i, p, work_dir / f"ai_clip_{i + 1}.mp4",
+                         lambda x, b=base, lb=label: report(lb, (b + x / len(prompts)) * share))
             else:
-                f = genai.generate_image(key, models["image"], p, fmt, work_dir / f"ai_picture_{i + 1}")
+                f = freeai.generate_image(p, fmt, work_dir / f"ai_picture_{i + 1}")
             files.append(f)
         return files
 
@@ -780,10 +771,10 @@ def create_ai(body: dict) -> dict:
 
     def work(report):
         if mode in ("image", "video"):
-            prompts = [prompt] if count == 1 else genai.shot_ideas(key, models.get("text"), prompt, count)
+            prompts = ideas(count)
             return {"files": as_sources(make(report, prompts)), "project": None}
         report("Planning the shots", 0.0)
-        shots = genai.shot_ideas(key, models.get("text"), prompt, count)
+        shots = ideas(count)
         files = as_sources(make(report, shots))
         res = create_project({"sources": [f["source"] for f in files], "mode": "highlight", "request": request,
                               "options": {"format": fmt, "captions": "off", "title": ""}})
@@ -1085,17 +1076,6 @@ def r_settings_post(h, q):
         if body["speed"] not in ("fast", "best"):
             raise HTTPError(400, "Unknown speed setting.")
         s["speed"] = body["speed"]
-    if "gemini_key" in body:
-        key = str(body["gemini_key"] or "").strip()
-        if not key:
-            s.pop("gemini_key", None)
-            s.pop("models", None)
-        else:
-            try:
-                models = genai.check_key(key)
-            except genai.AIError as e:
-                raise HTTPError(400, str(e)) from None
-            s.update(gemini_key=key, models=models)
     save_settings(s)
     return settings_view()
 

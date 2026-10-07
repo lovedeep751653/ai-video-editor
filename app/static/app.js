@@ -570,7 +570,6 @@ function choiceGroup(items, value, onPick, { cls = "", swatch = false, label = "
 }
 
 function newEnter() {
-  if (!S.settings) loadSettings().then(renderRequestHint);
   renderNew();
 }
 
@@ -591,10 +590,7 @@ function renderNew() {
 }
 
 function renderRequestHint() {
-  const s = S.settings;
-  $("#request-hint").textContent = s && s.can_text
-    ? "Google AI reads your request, so write it any way you like."
-    : 'Understands simple words like cinematic, tall, 30 seconds, slow motion, title "…". Add a Google AI key in Settings and it understands anything.';
+  $("#request-hint").textContent = "The AI reads your request, so write it any way you like, in English, Hindi, Punjabi or Hinglish.";
 }
 
 $$("#mode-seg button").forEach((b) => (b.onclick = () => { draft.mode = b.dataset.mode; renderNew(); }));
@@ -1459,12 +1455,6 @@ function renderCreate(tok) {
       h("button", { class: "btn", style: "margin-top:14px", onclick: () => createEnter({}, tok) }, icon("retry"), "Try again")));
     return;
   }
-  if (!s.ai_ready) {
-    body.replaceChildren(h("div", { class: "card ai-off" }, h("div", { class: "empty-ic" }, icon("key")), h("h2", { text: "Turn on AI creation" }),
-      h("p", { text: "Making pictures and videos from a description uses Google's AI. It needs your own Google AI key, added once in Settings. It's free to get one." }),
-      h("button", { class: "btn btn-primary btn-block btn-lg", onclick: () => go("settings", {}, "replace") }, icon("key"), "Open Settings")));
-    return;
-  }
   const kids = [];
 
   if (S.createJob) {
@@ -1485,7 +1475,7 @@ function renderCreate(tok) {
 
   if (S.createResult && S.createResult.files.length) kids.push(resultsBlock());
 
-  const kinds = [["image", "Picture", "image", "One image"], ["video", "Video clip", "video", "About 8 sec"], ["story", "Full video", "film", "From an idea"]];
+  const kinds = [["image", "Picture", "image", "One image"], ["video", "Video clip", "video", "5 seconds, free"], ["story", "Full video", "film", "From an idea"]];
   const kindRow = h("div", { class: "kind-cards", role: "radiogroup", "aria-label": "What to make" });
   for (const [v, name, ic, sub] of kinds) {
     const b = h("button", { class: "kind", role: "radio", "aria-checked": String(AI.mode === v) }, icon(ic), name, h("small", { text: sub }));
@@ -1511,7 +1501,7 @@ function renderCreate(tok) {
 
   if (AI.mode === "story") {
     kids.push(h("label", { class: "form-label", text: "Build the video from" }),
-      choiceGroup([["pictures", "AI pictures", "Cheaper, motion added"], ["clips", "AI video clips", "Real motion, costs more"]], AI.source,
+      choiceGroup([["pictures", "AI pictures", "Faster"], ["clips", "AI video clips", "Moving shots"]], AI.source,
         (v) => { AI.source = v; renderCreate(tok); }, { cls: "two", label: "Build the video from" }));
     const rq = h("input", { type: "text", id: "story-request", maxlength: "300", placeholder: 'e.g. cinematic, title "Dreams"' });
     rq.value = AI.request;
@@ -1526,10 +1516,8 @@ function renderCreate(tok) {
 
   const n = Number(AI.count);
   kids.push(h("p", { class: "cost" }, icon("info"), videoish
-    ? `Google charges for AI video by the second (about 8 seconds per clip). ${n} clip${n > 1 ? "s" : ""} can take a few minutes.`
-    : "Google may charge a few cents per AI picture, depending on your plan."));
-  if (videoish && !s.can_video) kids.push(h("div", { class: "note" }, icon("alert"), h("span", { text: "Your Google AI key can't make videos. Pictures still work." })));
-  if (!videoish && !s.can_image) kids.push(h("div", { class: "note" }, icon("alert"), h("span", { text: "Your Google AI key can't make pictures." })));
+    ? "Free. Each clip is a high-quality AI picture brought to life with smooth camera motion on your phone (5 seconds each). Needs internet."
+    : "Free. High-quality AI pictures. Needs internet."));
 
   const go_ = h("button", { class: "btn btn-primary btn-block btn-lg", id: "create-btn", disabled: !!S.createJob },
     icon("sparkles"), AI.mode === "story" ? "Create my video" : AI.mode === "video" ? `Create ${n > 1 ? n + " clips" : "clip"}` : `Create ${n > 1 ? n + " pictures" : "picture"}`);
@@ -1612,20 +1600,6 @@ async function settingsEnter(_p, tok) {
 
 function renderSettings() {
   const s = S.settings;
-  const st = $("#ai-status");
-  st.replaceChildren();
-  if (s && s.key_hint) {
-    for (const [ok, label] of [[s.can_text, "Understand anything you type"], [s.can_image, "Make AI pictures"], [s.can_video, "Make AI videos"]]) {
-      st.append(h("li", { class: ok ? "" : "no-row" }, h("span", { class: ok ? "ok" : "no" }, icon(ok ? "check" : "x")),
-        h("span", { text: label + (ok ? "" : " — not available with this key") })));
-    }
-    $("#key-input").placeholder = `Saved key ending in ${String(s.key_hint).replace(/[.…]/g, "")}`;
-  } else {
-    $("#key-input").placeholder = "Paste your key here";
-  }
-  $("#key-remove").hidden = !(s && s.key_hint);
-  $("#key-save").textContent = s && s.key_hint ? "Save new key" : "Save key";
-
   const q = s ? s.quality : null, sp = s ? s.speed : null;
   $("#set-quality").replaceChildren(...choiceGroup([["720", "720p", "Smaller files"], ["1080", "1080p", "Sharper picture"]], q, (v) => saveSetting({ quality: v })).children);
   $("#set-speed").replaceChildren(...choiceGroup([["fast", "Fast", "Uses the phone's video chip"], ["best", "Best quality", "Slower, smaller files"]], sp, (v) => saveSetting({ speed: v })).children);
@@ -1659,36 +1633,6 @@ function renderAbout() {
   rows.push(["Running", APP ? "On this phone" : "In the browser"]);
   $("#about").replaceChildren(...rows.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: v })]));
 }
-
-$("#key-eye").onclick = () => {
-  const i = $("#key-input");
-  i.type = i.type === "password" ? "text" : "password";
-  $("#key-eye").setAttribute("aria-label", i.type === "password" ? "Show key" : "Hide key");
-};
-$("#key-link").addEventListener("click", (e) => {
-  if (APP && typeof window.Android.openExternal === "function") { e.preventDefault(); window.Android.openExternal(e.currentTarget.href); }
-});
-
-async function saveKey(value) {
-  const btn = $("#key-save"), err = $("#key-error");
-  err.hidden = true;
-  btn.disabled = true;
-  btn.replaceChildren(h("div", { class: "spin" }), value ? "Checking key…" : "Removing…");
-  try {
-    S.settings = await api("api/settings", { method: "POST", json: { gemini_key: value } });
-    $("#key-input").value = "";
-    toast(value ? "Key saved" : "Key removed");
-  } catch (e) {
-    err.textContent = e.message;
-    err.hidden = false;
-  }
-  btn.disabled = false;
-  renderSettings();
-}
-$("#key-save").onclick = () => { const v = $("#key-input").value.trim(); if (v) saveKey(v); else $("#key-input").focus(); };
-$("#key-remove").onclick = async () => {
-  if (await confirmBox({ title: "Remove your Google AI key?", text: "AI pictures and videos will stop working until you add a key again.", ok: "Remove", danger: true })) saveKey("");
-};
 
 /* ------------------------------------------------------------------ */
 /* Start                                                               */

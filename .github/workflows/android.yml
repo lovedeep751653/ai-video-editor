@@ -29,6 +29,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: '8.11.1'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/editor-downloads
+          key: speech-sherpa-1.13.8-omnilingual-300m-v1
       - name: Copy the editor into the app
         run: sh .github/scripts/prepare-android.sh
       - name: Build APK
@@ -58,6 +62,15 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+      - name: Check the free AI picture services
+        continue-on-error: true
+        timeout-minutes: 15
+        run: python3 .github/scripts/check-free-ai.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: free-ai-pictures
+          path: out/free-ai
       - name: Test on an Android phone emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:

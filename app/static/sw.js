@@ -1,7 +1,7 @@
 // Caches the app's own screen so it opens instantly and survives a brief
 // loss of signal. Anything under /api/ (videos, uploads, progress, settings)
 // always goes to the network and is never cached.
-const CACHE = "editor-v3";
+const CACHE = "editor-v4";
 const SHELL = ["./", "index.html", "style.css", "app.js", "manifest.webmanifest", "icon-192.png", "icon-512.png", "icon.svg"];
 
 self.addEventListener("install", (e) => {

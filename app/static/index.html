@@ -150,7 +150,7 @@
 
   <!-- ============ CREATE WITH AI ============ -->
   <section class="screen" id="s-create" data-nav hidden>
-    <header class="page-head"><h1 class="big-title">Create with AI</h1><p class="muted">Describe a picture or a video and Google's AI makes it for you.</p></header>
+    <header class="page-head"><h1 class="big-title">Create with AI</h1><p class="muted">Describe a picture or a video and the AI makes it for you. Free, no account needed.</p></header>
     <div id="create-body"></div>
   </section>
 
@@ -159,19 +159,13 @@
     <header class="page-head"><h1 class="big-title">Settings</h1></header>
 
     <div class="card">
-      <div class="card-head"><span class="card-ic"><svg class="ic"><use href="#i-key"/></svg></span><h2>Google AI key</h2></div>
-      <p class="small muted">Needed for AI pictures, AI videos and for understanding anything you type.
-        Get a free key at <a id="key-link" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>:
-        sign in with Google, tap <b>Create API key</b>, copy it and paste it here.</p>
-      <label class="sr" for="key-input">Google AI key</label>
-      <div class="input-wrap">
-        <input id="key-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your key here">
-        <button class="icon-btn" id="key-eye" aria-label="Show key"><svg class="ic"><use href="#i-eye"/></svg></button>
-      </div>
-      <p id="key-error" class="error small" role="alert" hidden></p>
-      <button id="key-save" class="btn btn-primary btn-block">Save key</button>
-      <ul id="ai-status" class="status-list"></ul>
-      <button id="key-remove" class="btn btn-ghost btn-block danger-text" hidden>Remove key</button>
+      <div class="card-head"><span class="card-ic"><svg class="ic"><use href="#i-sparkles"/></svg></span><h2>AI</h2></div>
+      <p class="small muted">All AI is built in and free. No key, account or subscription needed.</p>
+      <ul class="status-list">
+        <li><span class="ok"><svg class="ic"><use href="#i-check"/></svg></span><span>Captions from speech: on your phone, works offline</span></li>
+        <li><span class="ok"><svg class="ic"><use href="#i-check"/></svg></span><span>Chat editing and typed requests: needs internet (simple commands work offline)</span></li>
+        <li><span class="ok"><svg class="ic"><use href="#i-check"/></svg></span><span>AI pictures and AI videos: needs internet</span></li>
+      </ul>
     </div>
 
     <div class="card">
