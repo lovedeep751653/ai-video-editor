@@ -113,8 +113,9 @@ jobs:
           prerelease: true
           files: out/test/*
 
+  # Publishes as soon as the APK is built; the phone test runs alongside and reports separately.
   publish:
-    needs: test
+    needs: build
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
