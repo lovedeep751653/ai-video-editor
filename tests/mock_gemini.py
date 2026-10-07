@@ -33,6 +33,28 @@ MODELS = [
 ]
 
 
+def chat_answer(text: str) -> dict:
+    """Stand-in for the AI editor: understands a few test phrases, using the edit it was shown."""
+    ctx = json.loads(text.split("CURRENT EDIT:\n", 1)[1].split("\n\nUSER: ", 1)[0])
+    msg = text.split("\n\nUSER: ", 1)[1].lower()
+    if "what" in msg and "?" in msg:
+        return {"reply": f"Your video is {ctx['video']['length']:.0f} seconds long with {len(ctx['clips'])} clips.",
+                "operations": []}
+    if msg.strip() == "undo":
+        return {"reply": "Going back.", "operations": [{"op": "undo"}]}
+    if "dog" in msg:
+        dog = [c["n"] for c in ctx["clips"] if "dog" in c.get("shows", "")]
+        return {"reply": "Removed the parts with the dog.", "operations": [{"op": "remove_clips", "clips": dog}]}
+    if "punjabi" in msg:
+        return {"reply": "ਪੰਜਾਬੀ ਵਿੱਚ ਕੈਪਸ਼ਨ ਲਗਾ ਦਿੱਤੇ।", "operations": [
+            {"op": "set_captions", "value": "on"}, {"op": "caption_language", "value": "pa"}]}
+    if "vintage" in msg:
+        return {"reply": "Gave it a vintage film look and added your text.", "operations": [
+            {"op": "set_look", "value": "vintage"},
+            {"op": "add_text", "text": "Best day", "start": 1, "end": 3, "position": "top"}]}
+    return {"reply": "Could you say that another way?", "operations": []}
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -84,7 +106,15 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"name": f"models/{model}/operations/{op}"})
         if p.endswith(":generateContent"):
             cfg = body.get("generationConfig", {})
-            parts = body["contents"][0]["parts"]
+            parts = body["contents"][-1]["parts"]
+            if "systemInstruction" in body:  # chat editing
+                return self._send(200, {"candidates": [{"content": {"parts": [{"text": json.dumps(
+                    chat_answer(parts[0]["text"]))}]}}]})
+            if any(p_.get("inlineData", {}).get("mimeType") == "image/jpeg" for p_ in parts):  # looking at frames
+                times = [float(p_["text"][2:-1]) for p_ in parts if p_.get("text", "").startswith("t=")]
+                return self._send(200, {"candidates": [{"content": {"parts": [{"text": json.dumps(
+                    [{"time": t, "text": "a colourful test pattern" if t < 6 else "a red dog on a beach"}
+                     for t in times])}]}}]})
             if "inlineData" in parts[0] and parts[0]["inlineData"]["mimeType"].startswith("audio"):
                 out = json.dumps([{"start": 0.4, "end": 2.6, "text": "ਸਤ ਸ੍ਰੀ ਅਕਾਲ ਦੋਸਤੋ, ਅੱਜ ਅਸੀਂ ਪਹਾੜਾਂ ਵਿੱਚ ਹਾਂ"},
                                   {"start": 3.0, "end": 5.5, "text": "यह नज़ारा बहुत सुंदर है"},

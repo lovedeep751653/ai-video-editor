@@ -10,7 +10,8 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
-from engine import captions, intent, music, pipeline  # noqa: E402
+from engine import captions, edits, intent, music, pipeline, render  # noqa: E402
+from engine.plan import Plan  # noqa: E402
 
 
 def ff(*args):
@@ -20,7 +21,11 @@ def ff(*args):
 def make_samples(d: Path) -> dict:
     s = {k: d / v for k, v in {
         "land": "landscape.mp4", "port": "portrait.mp4", "rot": "rotated.mp4",
-        "photo": "photo.jpg", "photo2": "photo2.png", "bad": "notes.txt"}.items()}
+        "photo": "photo.jpg", "photo2": "photo2.png", "bad": "notes.txt", "talk": "talk.mp4"}.items()}
+    # 30 s of "talking" (3.5 s of sound, 2 s of silence, repeated) for the clean-up mode
+    ff("-f", "lavfi", "-i", "testsrc2=s=1280x720:r=30:d=30", "-f", "lavfi", "-i",
+       "aevalsrc='if(lt(mod(t,5.5),3.5),0.4*sin(2*PI*220*t)*(0.6+0.4*sin(2*PI*3*t)),0.001*sin(2*PI*50*t))':s=48000:d=30",
+       "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", str(s["talk"]))
     # 6s test pattern, 4s black (boring), 6s fractal; with a tone
     ff("-f", "lavfi", "-i", "testsrc2=s=1280x720:r=30:d=6", "-f", "lavfi", "-i", "color=black:s=1280x720:r=30:d=4",
        "-f", "lavfi", "-i", "mandelbrot=s=1280x720:r=30", "-f", "lavfi", "-i", "sine=f=440:d=16",
@@ -42,16 +47,30 @@ def make_samples(d: Path) -> dict:
 def info(path: Path) -> dict:
     out = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", str(path)],
                          capture_output=True, text=True, check=True).stdout
-    v = [x for x in json.loads(out)["streams"] if x["codec_type"] == "video"][0]
-    return {"w": v["width"], "h": v["height"], "dur": float(v["duration"])}
+    streams = json.loads(out)["streams"]
+    v = [x for x in streams if x["codec_type"] == "video"][0]
+    a = [x for x in streams if x["codec_type"] == "audio"]
+    return {"w": v["width"], "h": v["height"], "dur": float(v["duration"]),
+            "adur": float(a[0]["duration"]) if a else 0.0}
 
 
-def run_case(s, files, opts, work, music_path=None):
+def run_case(s, files, opts, work, music_path=None, mode="highlight"):
     stages = []
-    r = pipeline.run([s[f] for f in files], work, opts, lambda st, f: stages.append(f), music_path=music_path)
+    sources = []
+    for i, f in enumerate(files):
+        d = work / "src" / str(i)
+        d.mkdir(parents=True)
+        sources.append({"id": f"s{i}", "name": s[f].name, "path": str(s[f]), "dir": str(d)})
+    state = {"mode": mode, "sources": sources, "version": 0,
+             "music": {"path": str(music_path), "name": music_path.name} if music_path else None,
+             "settings": {"captions": opts.get("captions", "off"), "caption_lang": "auto",
+                          "caption_style": captions.DEFAULT_STYLE, "caption_pos": "bottom"}}
+    ver, media = pipeline.first_edit(state, work, lambda st, f: stages.append(f), ("", {}), "best", opts)
     assert stages == sorted(stages), "progress must only go up"
     assert stages[-1] == 1.0
-    return r, info(work / "final.mp4")
+    r = {**ver["plan"], "skipped": state["skipped"], "total": ver["duration"], "state": state, "media": media,
+         "ver": ver}
+    return r, info(work / ver["file"])
 
 
 def test_all():
@@ -82,6 +101,7 @@ def test_all():
         # Music: every cut lands on a beat
         r, v = run_case(s, ["land", "port"], {"format": "9:16"}, t / "m", music_path=s["music"])
         assert r["music"]["synced"], "beat sync should have been found"
+        assert abs(v["dur"] - v["adur"]) < 0.1
         beat = 60 / r["music"]["bpm"]
         offset = 0.0
         for c in r["clips"][:-1]:
@@ -103,10 +123,43 @@ def test_all():
 
         # Nothing usable → clear error
         try:
-            pipeline.run([s["bad"]], t / "e", {}, lambda *a: None)
+            run_case(s, ["bad"], {}, t / "e")
             raise AssertionError("expected an error")
         except ValueError as e:
             assert "None of the files could be opened" in str(e)
+
+        # Long-video clean-up: pauses cut out, story kept in order, picture and sound in step
+        r, v = run_case(s, ["talk"], {}, t / "clean", mode="cleanup")
+        assert r["mode"] == "cleanup" and len(r["clips"]) >= 4, r["clips"]
+        assert all(a["start"] < b["start"] for a, b in zip(r["clips"], r["clips"][1:])), "order changed"
+        assert any("Pauses and silences removed" in n for n in r["notes"]), r["notes"]
+        assert (v["w"], v["h"]) == (1280, 720), "clean-up keeps the original shape"
+        assert 16 < v["dur"] < 26 and abs(v["dur"] - r["total"]) < 0.15, (v["dur"], r["total"])
+        assert abs(v["dur"] - v["adur"]) < 0.1, "sound and picture lengths differ"
+
+        # Chat edits on that video: commands understood without AI, applied, rendered again quickly
+        state, media = r["state"], r["media"]
+        plan = Plan.from_dict(r["ver"]["plan"])
+        ops, ok = edits.parse_local("remove clip 2 and make it black and white", plan)
+        assert ok and {o["op"] for o in ops} == {"remove_clips", "set_look"}, ops
+        res = edits.apply(ops, plan, media, state["settings"])
+        assert len(res.plan.clips) == len(plan.clips) - 1 and res.plan.look == "bw"
+        ops, _ = edits.parse_local("cut from 0:02 to 0:04, add text 'Hello ਦੋਸਤੋ' at 1 for 2 seconds", plan)
+        res = edits.apply(ops, plan, media, state["settings"])
+        assert abs(res.plan.total - (plan.total - 2)) < 0.2 and res.plan.texts[0]["text"] == "Hello ਦੋਸਤੋ", res.done
+        ver = pipeline.render_version(state, res.plan, media, t / "clean", lambda *a: None, ("", {}), "best", "test")
+        v2 = info(t / "clean" / ver["file"])
+        assert abs(v2["dur"] - (v["dur"] - 2)) < 0.25, (v2["dur"], v["dur"])
+        ops, _ = edits.parse_local("slow motion on clip 1", plan)
+        res = edits.apply(ops, plan, media, state["settings"])
+        ver = pipeline.render_version(state, res.plan, media, t / "clean", lambda *a: None, ("", {}), "best", "slow")
+        assert ver["reused"] >= 1, "unchanged parts should be reused, not made again"
+        for msg, op in [("undo", "undo"), ("make it 10 seconds", "shorten_to"), ("remove the pauses", "remove_pauses"),
+                        ("move clip 3 to the start", "move_clip"), ("captions in punjabi", "caption_language"),
+                        ("title 'Goa'", "set_title"), ("music quieter", "music_volume"), ("zoom in on clip 2", "zoom")]:
+            ops, ok = edits.parse_local(msg, plan)
+            assert ok and op in [o["op"] for o in ops], (msg, ops)
+        assert not edits.parse_local("tell me a joke", plan)[1]
     # Beat detection: right tempo on music, and honest about noise
     with tempfile.TemporaryDirectory() as t2:
         t2 = Path(t2)

@@ -39,7 +39,15 @@ def post(path, fields, files=()):
     return _send(req)
 
 
-def get(path):
+def post_json(path, obj, method="POST"):
+    req = urllib.request.Request(BASE + path, data=json.dumps(obj).encode(), method=method, headers={
+        "Content-Type": "application/json", "Cookie": COOKIE})
+    return _send(req)
+
+
+def get(path, headers=None):
+    if headers:
+        return _send(urllib.request.Request(BASE + path, headers={"Cookie": COOKIE, **headers}))
     return _send(urllib.request.Request(BASE + path, headers={"Cookie": COOKIE}))
 
 
@@ -80,6 +88,11 @@ def main():
     tmp = Path(tempfile.mkdtemp())
     data = tmp / "data"
     land, photo, mus = tmp / "land.mp4", tmp / "photo.jpg", tmp / "music.mp3"
+    talk, junk = tmp / "talk.mp4", tmp / "notes.txt"
+    junk.write_text("not a video")
+    ff("-f", "lavfi", "-i", "testsrc2=s=1280x720:r=30:d=12", "-f", "lavfi", "-i",
+       "aevalsrc='if(lt(mod(t,4),2.6),0.4*sin(2*PI*220*t)*(0.6+0.4*sin(2*PI*3*t)),0)':s=48000:d=12",
+       "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", str(talk))
     ff("-f", "lavfi", "-i", "testsrc2=s=1280x720:r=30:d=6", "-f", "lavfi", "-i", "mandelbrot=s=1280x720:r=30",
        "-f", "lavfi", "-i", "sine=f=440:d=12",
        "-filter_complex", "[1:v]trim=duration=6,setpts=PTS-STARTPTS[m];[0:v][m]concat=n=2:v=1:a=0[v]",
@@ -92,8 +105,8 @@ def main():
     ai = subprocess.Popen([sys.executable, str(HERE / "mock_gemini.py"), str(PORT_AI)])
     env = {**os.environ, "GENAI_BASE": f"http://127.0.0.1:{PORT_AI}/v1beta", "APP_PASSWORD": "1234",
            "EDITOR_DATA": str(data)}
-    app = subprocess.Popen([sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1",
-                            "--port", str(PORT_APP)], cwd=HERE.parent / "app", env=env,
+    env.update(HOST="127.0.0.1", PORT=str(PORT_APP))
+    app = subprocess.Popen([sys.executable, "server.py"], cwd=HERE.parent / "app", env=env,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         for url, check in ((f"http://127.0.0.1:{PORT_AI}/v1beta/models", False), (BASE + "/api/health", True)):
@@ -110,56 +123,128 @@ def main():
 
         # Access code
         assert get("/api/settings")[0] == 401, "settings reachable without the access code"
-        assert post("/api/login", {"code": "nope"})[0] == 401
-        assert post("/api/login", {"code": "1234"})[0] == 200
+        assert post_json("/api/login", {"code": "nope"})[0] == 401
+        assert post_json("/api/login", {"code": "1234"})[0] == 200
         assert get("/api/settings")[0] == 200
 
         # Google AI key
-        code, res = post("/api/settings", {"gemini_key": "bad"})
+        code, res = post_json("/api/settings", {"gemini_key": "bad"})
         assert code == 400 and "key" in res["detail"].lower(), res
-        code, res = post("/api/settings", {"gemini_key": "test-key-123"})
+        code, res = post_json("/api/settings", {"gemini_key": "test-key-123"})
         assert code == 200 and res["ai_ready"], res
         assert res["models"]["image"] == "imagen-4.0-generate-001", res["models"]
         assert res["models"]["video"] == "veo-3.0-fast-generate-001", res["models"]
         assert res["models"]["text"] == "gemini-2.5-flash", res["models"]
 
-        # Edit with music + typed request + captions
-        code, res = post("/api/jobs", {"request": "make it wide and cinematic", "captions": "on",
-                                       "caption_lang": "pa", "caption_style": "neonpink-pop"},
-                         [("files", land), ("files", photo), ("music", mus)])
+        # Adding files
+        code, res = post("/api/sources", {}, [("files", land), ("files", photo), ("files", talk), ("files", mus),
+                                              ("files", junk)])
         assert code == 200, res
-        job = wait(res["id"])
-        r = job["result"]
-        assert r["format"] == "16:9" and r["look"] == "cinematic", r["format"]
-        assert r["music"]["synced"], r["music"]
-        assert r["captions"], "no caption lines came back"
-        assert any("Captions added" in n for n in r["notes"]), r["notes"]
-        assert get(f"/api/jobs/{res['id']}/video")[0] == 200
-        assert get(f"/api/jobs/{res['id']}/thumb")[0] == 200
+        src = {x["name"]: x for x in res["sources"]}
+        assert src["land.mp4"]["kind"] == "video" and src["photo.jpg"]["kind"] == "image"
+        assert src["music.mp3"]["kind"] == "audio" and src["notes.txt"]["error"], res
+        assert get(src["land.mp4"]["thumb"])[0] == 200
 
         # Bad settings are refused
-        assert post("/api/jobs", {"format": "4:3"}, [("files", photo)])[0] == 400
-        assert post("/api/jobs", {"length": "900"}, [("files", photo)])[0] == 400
-        assert post("/api/jobs", {"caption_style": "nope"}, [("files", photo)])[0] == 400
+        ids = [src["land.mp4"]["id"]]
+        assert post_json("/api/projects", {"sources": ids, "options": {"format": "4:3"}})[0] == 400
+        assert post_json("/api/projects", {"sources": ids, "options": {"length": "4000"}})[0] == 400
+        assert post_json("/api/projects", {"sources": ids, "options": {"caption_style": "nope"}})[0] == 400
+        assert post_json("/api/projects", {"sources": []})[0] == 400
+
+        # Highlight with music + typed request + captions in Punjabi, at 720p
+        assert post_json("/api/settings", {"quality": "720"})[1]["quality"] == "720"
+        code, res = post_json("/api/projects", {
+            "sources": [src["land.mp4"]["id"], src["photo.jpg"]["id"], src["talk.mp4"]["id"]],
+            "music": src["music.mp3"]["id"], "mode": "highlight", "request": "make it wide and cinematic",
+            "options": {"captions": "on", "caption_lang": "pa", "caption_style": "neonpink-pop"}})
+        assert code == 200, res
+        wait(res["job"])
+        code, p = get(f"/api/projects/{res['project']}")
+        assert p["plan"]["format"] == "16:9" and p["plan"]["look"] == "cinematic", p["plan"]
+        assert (p["plan"]["width"], p["plan"]["height"]) == (1280, 720)
+        assert p["plan"]["music"] and p["plan"]["captions"], p["plan"]
+        assert any("Captions" in n for n in p["plan"]["notes"]), p["plan"]["notes"]
+        assert p["chat"][0]["role"] == "user" and p["chat"][-1]["role"] == "assistant"
+        code, part = get(p["video"], {"Range": "bytes=0-999"})
+        assert code == 206 and len(part) == 1000, "video seeking (Range) must work"
+        assert get(p["download"])[0] == 200 and get(p["thumb"])[0] == 200
+        assert get(p["plan"]["clips"][0]["thumb"])[0] == 200
+
+        # Clean-up of a talking video, then chat with the (stand-in) AI editor
+        code, res = post_json("/api/projects", {"sources": [src["talk.mp4"]["id"], src["land.mp4"]["id"]],
+                                                "mode": "cleanup"})
+        wait(res["job"])
+        pid = res["project"]
+        code, p = get(f"/api/projects/{pid}")
+        assert p["mode"] == "cleanup" and p["version"] == 1 and len(p["plan"]["clips"]) >= 3, p["plan"]
+        n_clips = len(p["plan"]["clips"])
+
+        def chat(msg):
+            code, r = post_json(f"/api/projects/{pid}/chat", {"message": msg})
+            assert code == 200, r
+            wait(r["job"])
+            return get(f"/api/projects/{pid}")[1]
+
+        p = chat("what is in my video?")
+        assert p["version"] == 1 and "clips" in p["chat"][-1]["text"], p["chat"][-1]
+        p = chat("remove the dog")  # the AI was shown pictures of the video: the "dog" is in land.mp4 after 6 s
+        assert p["version"] == 2 and len(p["plan"]["clips"]) < n_clips, p["chat"][-1]
+        p = chat("make it vintage with some text")
+        assert p["version"] == 3 and p["plan"]["look"] == "vintage" and p["plan"]["texts"], p["plan"]
+        p = chat("captions in punjabi please")
+        assert p["version"] == 4 and p["plan"]["captions"] and "ਪੰਜਾਬੀ" in p["chat"][-1]["text"]
+        p = chat("undo")
+        assert p["version"] == 3, p["version"]
+        code, r = post_json(f"/api/projects/{pid}/restore", {"version": 1})
+        wait(r["job"])
+        assert get(f"/api/projects/{pid}")[1]["version"] == 1
+        code, r = post_json(f"/api/projects/{pid}/clips", {"action": "remove", "clip": 0})
+        wait(r["job"])
+        p = get(f"/api/projects/{pid}")[1]
+        assert p["version"] == 5 and p["chat"][-1]["text"].startswith("Done"), p["chat"][-1]
+
+        # Without a key the chat still understands the common commands
+        assert not post_json("/api/settings", {"gemini_key": ""})[1]["ai_ready"]
+        p = chat("remove clip 1 and make it black and white")
+        assert p["plan"]["look"] == "bw" and p["version"] == 6, p["chat"][-1]
+        p = chat("tell me a joke")
+        assert "Google AI key" in p["chat"][-1]["text"]
+        assert post_json("/api/settings", {"gemini_key": "test-key-123"})[1]["ai_ready"]
+
+        # Cancelling
+        code, res = post_json("/api/projects", {"sources": [src["talk.mp4"]["id"]], "mode": "highlight"})
+        post_json(f"/api/jobs/{res['job']}/cancel", {})
+        job = get(f"/api/jobs/{res['job']}")[1]
+        for _ in range(60):
+            if job["state"] in ("cancelled", "done", "failed"):
+                break
+            time.sleep(0.5)
+            job = get(f"/api/jobs/{res['job']}")[1]
+        assert job["state"] == "cancelled", job
+
+        # Projects list and delete
+        code, res = get("/api/projects")
+        assert code == 200 and len(res["projects"]) >= 3
+        assert post_json(f"/api/projects/{pid}", {}, method="DELETE")[0] == 200
+        assert get(f"/api/projects/{pid}")[0] == 404
 
         # AI pictures
-        code, res = post("/api/create", {"mode": "image", "prompt": "a sunset", "format": "9:16", "count": "2"})
+        code, res = post_json("/api/create", {"mode": "image", "prompt": "a sunset", "format": "9:16", "count": 2})
         assert code == 200, res
-        job = wait(res["id"])
-        assert len(job["result"]["files"]) == 2, job["result"]
-        name = job["result"]["files"][0]["name"]
-        assert get(f"/api/jobs/{res['id']}/files/{name}")[0] == 200
-        assert get(f"/api/jobs/{res['id']}/files/../status.json")[0] in (404, 400)
+        job = wait(res["job"])
+        files = job["result"]["files"]
+        assert len(files) == 2 and get(files[0]["url"])[0] == 200, files
 
         # Full video from AI clips
-        code, res = post("/api/create", {"mode": "story", "prompt": "a day in the mountains", "format": "9:16",
-                                         "source": "clips", "count": "2", "request": "vintage"})
+        code, res = post_json("/api/create", {"mode": "story", "prompt": "a day in the mountains", "format": "9:16",
+                                              "source": "clips", "count": 2, "request": "vintage"})
         assert code == 200, res
-        job = wait(res["id"], 900)
-        assert job["result"]["look"] == "vintage", job["result"]["look"]
-        assert job["result"]["format"] == "9:16", "the chosen shape should be kept"
+        job = wait(res["job"], 900)
+        wait(job["result"]["edit_job"], 900)
+        p = get(f"/api/projects/{job['result']['project']}")[1]
+        assert p["plan"]["look"] == "vintage" and p["plan"]["format"] == "9:16", p["plan"]
         assert len(job["result"]["shots"]) == 2
-        assert get(f"/api/jobs/{res['id']}/video")[0] == 200
 
         # Caption styles and previews
         code, res = get("/api/caption-styles")

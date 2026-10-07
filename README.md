@@ -1,6 +1,7 @@
 # AI editor open source
 
-A mobile-first app that turns raw phone footage into a finished short video,
+An Android app that edits videos entirely on the phone: no server, no hosting,
+nothing uploaded. It turns raw phone footage into a finished video,
 automatically. Upload videos and photos; it measures every moment, drops the
 dark, blurry, shaky and empty parts, keeps the best ones, trims and arranges
 them, adds transitions, a colour look, slow motion, a title, music cut to the
@@ -25,8 +26,14 @@ beat and captions, then renders an MP4 to preview and download.
   phrase list otherwise.
 - **AI creation** — pictures (Imagen / Gemini image models), video clips (Veo),
   and a whole edited video from one idea.
-- **Installable** — add to the phone's home screen (PWA), or install the
-  Android APK built from `android/`.
+- **Clean up long videos** — 5 to 30 minute videos keep their story; pauses,
+  silences, shaky and dark parts are removed.
+- **Chat editing** — tell the AI what to change ("remove clip 3", "black and
+  white", "captions in Punjabi", "cut the part with the dog"); each change makes
+  a new version you can undo, and only the parts that changed are re-rendered.
+- **On the phone** — Python (Chaquopy) and FFmpeg (ffmpeg-kit) run inside the
+  APK; picked files are read in place, and the phone's hardware encoder is used
+  when it has one.
 
 ## Layout
 
@@ -41,37 +48,44 @@ beat and captions, then renders an MP4 to preview and download.
 | `app/engine/intent.py` | typed request → settings, without any AI |
 | `app/engine/render.py` | FFmpeg rendering, transitions, music, captions |
 | `app/engine/pipeline.py` | runs the whole job and reports real progress |
-| `app/server.py` | web API, job queue, access code, settings |
+| `app/engine/edits.py` | chat edits: applies the AI's changes to the plan |
+| `app/engine/ff.py` | runs FFmpeg on a computer or inside the app |
+| `app/server.py` | the editor's API, job queue, projects, versions |
+| `app/android_main.py` | starts the editor inside the Android app |
 | `app/static/` | the phone screen |
 | `app/fonts/` | caption fonts (Latin, Devanagari, Gurmukhi) |
-| `android/` | Android app (a full-screen window onto the editor) |
+| `android/` | Android app (runs the editor on the phone) |
 | `tests/` | engine and end-to-end app tests |
 
 ## Running it
 
-Locally: `./run.sh` (Python 3.11+, FFmpeg, `pip install -r requirements.txt`),
-then open `http://localhost:8000`.
+On the phone: install `AI-editor-open-source.apk` from the
+[apk-latest release](https://github.com/lovedeep751653/ai-video-editor/releases/tag/apk-latest).
+AI features (captions, understanding any request, pictures, video) need a
+Google AI key saved in the app's Settings; everything else works offline.
 
-Anywhere with Docker: `docker build -t editor . && docker run -p 7860:7860 editor`.
+On a computer, for development: `./run.sh` (Python 3.11+, FFmpeg,
+`pip install -r requirements.txt`), then open `http://localhost:8000`.
 
 | Variable | Meaning |
 | --- | --- |
-| `APP_PASSWORD` | access code required before the app can be used (set this when hosting publicly) |
+| `APP_PASSWORD` | access code required before the app can be used |
 | `GEMINI_API_KEY` | Google AI key; can also be saved in the app's Settings |
-| `EDITOR_DATA` | where jobs are stored (default `data/`) |
-| `EDITOR_KEEP_HOURS` | how long finished videos are kept (default 24) |
+| `EDITOR_DATA` | where projects are stored (default `data/`) |
 
 ## Tests
 
-- `python3 tests/test_engine.py` — editing, beat sync, looks, captions, typed
-  requests (~4 minutes).
-- `python3 tests/test_app.py` — the whole web app against a stand-in for
-  Google's AI, so nothing is charged (~2 minutes).
+- `python3 tests/test_engine.py` — editing, clean-up, chat edits, beat sync,
+  looks, captions, typed requests.
+- `python3 tests/test_app.py` — the whole app API against a stand-in for
+  Google's AI, so nothing is charged.
+- On GitHub, every build is installed on an Android emulator, which runs real
+  edits inside the APK (`.github/scripts/selftest.sh`).
 
 ## Android APK
 
-`android/` is a small Android app that opens the editor full screen, handles
-uploads from the phone's gallery and saves downloads to Movies. The workflow in
-`.github/workflows/android.yml` builds it on GitHub and publishes
-`AI-Video-Editor.apk` as a release, so no Android tooling is needed locally. On
-first launch the app asks once for the editor's web address.
+`android/` holds the Android app: it starts the editor inside the app and shows
+it full screen, opens the phone's gallery picker, accepts videos shared from
+other apps, saves to the gallery and keeps long edits running with a
+notification. `.github/workflows/android.yml` builds it, tests it on an
+emulator and publishes `AI-editor-open-source.apk` (64-bit phones).

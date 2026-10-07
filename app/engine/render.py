@@ -31,6 +31,9 @@ from .plan import Clip, Plan
 FPS = 30
 AUDIO = ["-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2"]
 MAX_PART = 60.0  # seconds of finished video per part (smaller parts = quicker re-edits)
+# Clips are grouped only within the same stretch of their file, so a chat edit
+# changes the parts around it and every other part is reused from before.
+PART_WINDOW = 20.0
 EDGE = 0.012     # tiny sound fade at every cut so jumps never click
 
 
@@ -103,7 +106,8 @@ def make_parts(plan: Plan) -> list[Part]:
                 d = plan.clips[j]
                 prev = group[-1]
                 if not (_groupable(d) and d.media_index == c.media_index and not bounds[j - 1]
-                        and d.start >= prev.start + prev.duration - 1e-3 and dur + d.duration <= MAX_PART):
+                        and d.start >= prev.start + prev.duration - 1e-3 and dur + d.duration <= MAX_PART
+                        and int(d.start // PART_WINDOW) == int(c.start // PART_WINDOW)):
                     break
                 group.append(d)
                 dur += d.duration
@@ -252,7 +256,8 @@ def _finish(plan: Plan, start: float, dur: float, first: bool, last: bool, ass: 
         chain.append(f"[{n_inputs}:a]{','.join(mf)}[am]")
         chain.append("[ao0][am]amix=inputs=2:duration=first:normalize=0[amx]")
         a = "amx"
-    chain.append(f"[{a}]{','.join(af + ['aresample=48000'])}[ao]")
+    # Sound exactly as long as the picture (encoders and crossfades can leave it a little short).
+    chain.append(f"[{a}]{','.join(af + ['aresample=48000', 'apad', f'atrim=duration={dur:.4f}'])}[ao]")
     return inputs, chain
 
 

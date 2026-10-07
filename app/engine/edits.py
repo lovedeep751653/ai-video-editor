@@ -352,7 +352,9 @@ def apply(ops: list[dict], plan: Plan, media: dict[int, Media], settings: dict) 
         p.clips = copy.deepcopy(plan.clips)
         r.problems.append("that would leave nothing in the video, so I kept the clips")
     p.recount()
-    r.changed = bool(r.reedit) or p.to_dict() != plan.to_dict() or r.settings != settings
+    base = copy.deepcopy(plan)
+    base.recount()
+    r.changed = bool(r.reedit) or p.to_dict() != base.to_dict() or r.settings != settings
     return r
 
 

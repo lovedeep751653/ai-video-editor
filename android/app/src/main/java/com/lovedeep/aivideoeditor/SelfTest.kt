@@ -12,7 +12,12 @@ import java.io.File
  * (the same way picked files are read), then runs real edits and chat changes. Results go to the log.
  */
 object SelfTest {
+    @Volatile private var started = false
+
+    @Synchronized
     fun run(activity: MainActivity) {
+        if (started) return
+        started = true
         Thread({
             try {
                 val dir = File(activity.cacheDir, "selftest").apply { deleteRecursively(); mkdirs() }
