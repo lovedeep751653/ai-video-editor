@@ -123,14 +123,18 @@ jobs:
         with:
           name: apk
           path: out
+      # The gh tool streams the ~2 GB file; the release action ran out of room for files this big.
       - name: Publish as a download link
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: apk-latest
-          name: AI editor open source APK
-          body: |
-            Install this file on your Android phone. Everything runs on the phone itself: no website or server needed.
-            All the AI is built in and free: no key, account or subscription. Firely, the app's own thinking AI, runs on your phone and works offline: it understands your typed requests and chat edits, looks at your videos and writes picture ideas. Captions work offline too. AI pictures and AI videos are drawn by a free online picture maker, so they need internet.
-            Firely is built on Qwen3-VL (Apache 2.0) and llama.cpp (MIT).
-          files: out/AI-editor-open-source.apk
-          make_latest: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cat > notes.md <<'EOF'
+          Install this file on your Android phone. Everything runs on the phone itself: no website or server needed.
+          All the AI is built in and free: no key, account or subscription. Firely, the app's own thinking AI, runs on your phone and works offline: it understands your typed requests and chat edits, looks at your videos and writes picture ideas. Captions work offline too. AI pictures and AI videos are drawn by a free online picture maker, so they need internet.
+          Firely is built on Qwen3-VL (Apache 2.0) and llama.cpp (MIT).
+          EOF
+          gh release view apk-latest >/dev/null 2>&1 || gh release create apk-latest --title "AI editor open source APK" --notes-file notes.md --latest
+          for i in 1 2 3; do gh release upload apk-latest out/AI-editor-open-source.apk --clobber && break; sleep 20; done
+          gh release edit apk-latest --title "AI editor open source APK" --notes-file notes.md --latest
+          gh release view apk-latest --json assets -q '.assets[] | .name + " " + (.size|tostring)'
