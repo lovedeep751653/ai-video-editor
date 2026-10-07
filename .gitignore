@@ -10,3 +10,7 @@ android/build/
 out/
 android/app/libs/
 android/app/src/main/assets/speech/
+android/app/src/main/assets/brain/
+android/app/src/main/cpp/llama.cpp
+android/app/src/main/jniLibs/
+build/

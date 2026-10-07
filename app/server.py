@@ -450,7 +450,7 @@ def _understand(request: str, report) -> tuple[dict, list[str]]:
         return intent.clean(genai.interpret(key, models["text"], request)), []
     except genai.AIError as e:
         return intent.clean(intent.parse_keywords(request)), [
-            f"The AI couldn't be reached ({e}); used the built-in understanding instead"]
+            f"The on-phone AI couldn't answer ({e}); used the built-in understanding instead"]
 
 
 def create_project(body: dict) -> dict:

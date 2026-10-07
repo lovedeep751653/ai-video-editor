@@ -13,6 +13,7 @@ import threading
 import time
 import traceback
 import urllib.request
+from pathlib import Path
 
 _httpd = None
 
@@ -106,6 +107,37 @@ def _selftest(folder: str, saf_path: str, port: int, token: str) -> None:
                                                                 "name": "music.m4a"}]}).get("sources", [{}])[0]
         check("music_source", music.get("kind") == "audio", json.dumps(music)[:300])
 
+        # Firely, the on-phone thinking AI (first use unpacks and loads the model)
+        from engine import genai as _g
+        t = time.time()
+        try:
+            o = _g.interpret(_g.FREE, "free", "make it vertical with a vintage look and a title 'Goa'")
+            check("brain_text", o.get("format") == "9:16" and o.get("look") == "vintage" and "goa" in str(o.get("title")).lower(),
+                  f"{time.time() - t:.1f}s {o}")
+        except Exception as e:  # noqa: BLE001
+            check("brain_text", False, f"{time.time() - t:.1f}s {e}")
+        t = time.time()
+        try:
+            o = _g.interpret(_g.FREE, "free", "इसे वर्टिकल बनाओ और 'मेरा गाँव' शीर्षक लगाओ")
+            _say(f"INFO brain_hindi ok={o.get('format') == '9:16'} {time.time() - t:.1f}s {o}")
+        except Exception as e:  # noqa: BLE001
+            _say(f"INFO brain_hindi ok=False {e}")
+        t = time.time()
+        try:
+            from engine import ff as _ff
+            pic = Path(folder) / "brain_look.jpg"
+            _ff.run_quiet(["-f", "lavfi", "-i", "testsrc2=s=480x270", "-frames:v", "1", str(pic)])
+            seen = _g.describe_frames(_g.FREE, "free", [(1.0, pic)])
+            check("brain_vision", bool(seen and seen[0].get("text")), f"{time.time() - t:.1f}s {seen}")
+        except Exception as e:  # noqa: BLE001
+            check("brain_vision", False, f"{time.time() - t:.1f}s {e}")
+        t = time.time()
+        try:
+            rich = _g.enhance_image_prompt(_g.FREE, "free", "ek kutta beach par")
+            _say(f"INFO brain_prompt {time.time() - t:.1f}s {rich!r}")
+        except Exception as e:  # noqa: BLE001
+            _say(f"INFO brain_prompt failed {e}")
+
         t = time.time()
         r = call("POST", "/api/projects", {"sources": [ok_srcs[0]["id"]], "mode": "cleanup",
                                            "request": "add the title 'नमस्ते ਪੰਜਾਬ'"})
@@ -140,18 +172,11 @@ def _selftest(folder: str, saf_path: str, port: int, token: str) -> None:
         check("captions_render", prev.get("bytes", 0) > 2000, str(prev))
         prev = call("GET", "/api/caption-preview/classic-simple?lang=hi")
         check("captions_render_hindi", prev.get("bytes", 0) > 2000, str(prev))
-        from pathlib import Path
-
-        from engine import genai, speech
+        from engine import speech
         t0 = time.time()
         lines = speech.transcribe(Path(str(speech._android_bridge().selftestWav())))
         heard = " ".join(ln["text"] for ln in lines)
         check("speech_captions", "country" in heard.lower(), f"{time.time() - t0:.1f}s {heard!r}")
-        try:
-            o = genai.interpret(genai.FREE, "free", "make it vertical with a vintage look and a title 'Goa'")
-            _say(f"INFO free_ai_text ok={o.get('format') == '9:16'} {o}")
-        except Exception as e:  # noqa: BLE001
-            _say(f"INFO free_ai_text ok=False {e}")
         # Free AI (no key, real internet): reported only, so an outside service outage can't block a release.
         try:
             res = call("POST", "/api/create", {"mode": "video", "prompt": "colourful kites over a village at sunset",

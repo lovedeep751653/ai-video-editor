@@ -1,8 +1,8 @@
 """Understands a typed request such as "make it cinematic, 30 seconds, vertical,
 smooth transitions, title 'Goa 2026'" and turns it into editing options.
 
-The request is first sent to the free AI (genai.interpret), which understands
-free-form wording; this built-in phrase list is the fallback without internet."""
+The request is first read by the on-phone AI (genai.interpret), which understands
+free-form wording; this built-in phrase list is the fallback if it can't answer."""
 
 from __future__ import annotations
 

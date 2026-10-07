@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import analyze, captions, edits, ff, genai, music as music_mod, plan as planner, render
+from . import analyze, brain, captions, edits, ff, genai, music as music_mod, plan as planner, render
 from .analyze import Media
 from .plan import Plan
 
@@ -247,6 +247,7 @@ def render_version(state: dict, plan: Plan, media: dict[int, Media], work: Path,
     out = work / f"v{n}.mp4"
     music_path = Path(state["music"]["path"]) if state.get("music") and plan.music else None
     started = time.time()
+    brain.release()  # give the phone's memory to the video encoder
     info = render.render(plan, media, out, work / "parts", overlay, music_path, speed,
                          lambda f: report("Making the video", lo + (1 - lo) * 0.97 * f))
     render.thumbnail(out, work / f"thumb_v{n}.jpg", at=min(1.0, plan.total / 3))
@@ -330,7 +331,7 @@ def ensure_scenes(state: dict, media: dict[int, Media], ai, work: Path, report) 
             continue
         report(f"Looking at {m.name}", 0.05)
         if m.kind == "video":
-            n = int(min(40, max(6, m.duration / 6)))
+            n = int(min(16, max(4, m.duration / 10)))  # looked at on the phone: a few well-spread moments
             times = [round((k + 0.5) * m.duration / n, 1) for k in range(n)]
         else:
             times = [0.0]
@@ -359,10 +360,10 @@ def chat(state: dict, plan: Plan, media: dict[int, Media], message: str, ai, wor
         hist = [h for h in state.get("chat", []) if h.get("text")][:-1]
         try:
             answer = genai.edit_chat(key, models["text"], ctx, message, hist)
-        except genai.AIError as e:
+        except genai.AIError:
             ops, ok = edits.parse_local(message, plan)
             if not ok:
-                return f"I couldn't reach the AI ({e}). " + edits.LOCAL_HELP, None, False
+                return "I couldn't work that out just now. " + edits.LOCAL_HELP, None, False
             answer = {"reply": "", "operations": ops}
     else:
         ops, ok = edits.parse_local(message, plan)

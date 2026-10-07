@@ -1,29 +1,23 @@
 """The app's thinking AI: understands typed requests and chat edits, looks at
-video frames and writes shot ideas.
+video frames and writes shot ideas and picture prompts.
 
-It uses a free public AI service that needs no key or account (key FREE).
-The Gemini-style requests built below are translated to that service's
-OpenAI-style chat format in _free_generate."""
+It runs on the phone itself (engine/brain.py: a small model through llama.cpp), so it
+needs no internet, key or account. The Gemini-style requests built below are turned
+into a plain conversation for that model in _local_generate."""
 
 from __future__ import annotations
 
 import base64
 import json
-import os
 import re
-import time
-import urllib.error
-import urllib.request
+import tempfile
 from pathlib import Path
 
-from . import speech, translit
+from . import brain, ff, speech, translit
 
 TIMEOUT = 120
 FREE = "free"
 FREE_MODELS = {"text": "free"}
-FREE_TEXT = [b for b in os.environ.get("FREEAI_TEXT_BASES", "https://text.pollinations.ai/openai,"
-                                       "https://gen.pollinations.ai/v1/chat/completions").split(",") if b]
-UA = "AI-editor-open-source/1.0 (+https://github.com/lovedeep751653/ai-video-editor)"
 
 
 class AIError(Exception):
@@ -51,60 +45,56 @@ def _unfence(text: str) -> str:
     return t[min(starts):] if starts and not t.startswith(("{", "[")) else t
 
 
-def _free_generate(body: dict, timeout) -> dict:
+def _local_generate(body: dict) -> dict:
+    """Runs one Gemini-style request on the on-phone model and returns a Gemini-style answer."""
     cfg = body.get("generationConfig") or {}
     system = " ".join(p.get("text", "") for p in (body.get("systemInstruction") or {}).get("parts", []))
     schema = cfg.get("responseSchema")
     if schema:
-        system += ("\n\nAnswer with JSON only (no markdown, no explanation) that matches this JSON schema:\n"
-                   + json.dumps(_schema(schema)))
+        system += ("\n\nAnswer with JSON only that matches this JSON schema:\n"
+                   + json.dumps(_schema(schema), ensure_ascii=False, separators=(",", ":")))
     messages = [{"role": "system", "content": system.strip()}] if system.strip() else []
-    for c in body.get("contents", []):
-        parts = []
-        for p in c.get("parts", []):
-            if "text" in p:
-                parts.append({"type": "text", "text": p["text"]})
-            elif (p.get("inlineData") or {}).get("mimeType", "").startswith("image/"):
-                d = p["inlineData"]
-                parts.append({"type": "image_url", "image_url": {"url": f"data:{d['mimeType']};base64,{d['data']}"}})
-        if not parts:
-            continue
-        content = parts[0]["text"] if len(parts) == 1 and parts[0]["type"] == "text" else parts
-        messages.append({"role": "assistant" if c.get("role") == "model" else "user", "content": content})
-    req = {"model": "openai", "messages": messages, "private": True, "referrer": "ai-editor-open-source"}
-    if "temperature" in cfg:
-        req["temperature"] = cfg["temperature"]
-    if schema and schema.get("type") == "OBJECT":
-        req["response_format"] = {"type": "json_object"}
-    data = json.dumps(req).encode()
-    errors = []
-    for url in FREE_TEXT:
-        for attempt in range(3):
-            r = urllib.request.Request(url, data=data, method="POST",
-                                       headers={"Content-Type": "application/json", "User-Agent": UA})
+    images: list[str] = []
+    tmp: list[Path] = []
+    try:
+        for c in body.get("contents", []):
+            texts = []
+            for p in c.get("parts", []):
+                if "text" in p:
+                    texts.append(p["text"])
+                elif (p.get("inlineData") or {}).get("mimeType", "").startswith("image/"):
+                    fd, path = tempfile.mkstemp(prefix="frame_", suffix=".jpg", dir=ff._tmpdir())
+                    with open(fd, "wb") as f:
+                        f.write(base64.b64decode(p["inlineData"]["data"]))
+                    tmp.append(Path(path))
+                    images.append(path)
+                    texts.append("<image>")
+            if texts:
+                messages.append({"role": "assistant" if c.get("role") == "model" else "user", "content": "\n".join(texts)})
+        max_tokens = int(cfg.get("maxOutputTokens") or 512)
+        temperature = float(cfg.get("temperature", 0.2))
+        text = ""
+        for attempt in range(2):  # a small model occasionally runs out of room mid-answer: try once more
             try:
-                with urllib.request.urlopen(r, timeout=timeout) as resp:
-                    out = json.loads(resp.read() or b"{}")
-                text = ((out.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
-                if text.strip():
-                    return {"candidates": [{"content": {"parts": [{"text": _unfence(text)}]}}]}
-                errors.append("empty answer")
-            except urllib.error.HTTPError as e:
-                errors.append(f"HTTP {e.code}")
-                if e.code == 429:
-                    time.sleep(16)
-                    continue
-                if e.code in (401, 402, 403, 404):
-                    break
-            except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
-                errors.append(str(getattr(e, "reason", e)))
-            time.sleep(2)
-    raise AIError("The free AI couldn't answer right now. Please check the internet connection. "
-                  f"({'; '.join(errors[-2:])})")
+                text = brain.chat(messages, schema, max_tokens, temperature if attempt == 0 else 0.3, images)
+            except brain.BrainError as e:
+                raise AIError(str(e)) from None
+            text = _unfence(text)
+            if not schema:
+                break
+            try:
+                json.loads(text)
+                break
+            except ValueError:
+                continue
+        return {"candidates": [{"content": {"parts": [{"text": text}]}}]}
+    finally:
+        for f in tmp:
+            f.unlink(missing_ok=True)
 
 
 def _request(key: str, method: str, url: str, body: dict | None = None, raw: bool = False, timeout=TIMEOUT):
-    return _free_generate(body or {}, timeout)
+    return _local_generate(body or {})
 
 
 def _json_from(res: dict):
@@ -142,9 +132,14 @@ def interpret(key: str, model: str, request: str) -> dict:
     )
     res = _request(key, "POST", f"models/{model}:generateContent", {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema, "temperature": 0},
+        "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema, "temperature": 0,
+                             "maxOutputTokens": 200},
     })
     o = _json_from(res)
+    try:
+        o["length"] = max(0, min(1800, float(o.get("length") or 0)))
+    except (TypeError, ValueError):
+        o["length"] = 0
     if not o.get("length"):
         o.pop("length", None)
     return o
@@ -154,13 +149,14 @@ def shot_ideas(key: str, model: str | None, idea: str, count: int) -> list[str]:
     """Splits an idea into a few different shot descriptions so the result isn't repetitive."""
     if not model:
         return [idea] * count
-    schema = {"type": "ARRAY", "items": {"type": "STRING"}}
+    schema = {"type": "ARRAY", "items": {"type": "STRING"}, "minItems": count, "maxItems": count}
     prompt = (f"Write {count} short, vivid, visually different camera shot descriptions (one sentence each) "
               f"that together tell this idea as a short video, in order. No text or words on screen.\n\nIdea: {idea}")
     try:
         res = _request(key, "POST", f"models/{model}:generateContent", {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema},
+            "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema,
+                                 "temperature": 0.7, "maxOutputTokens": 70 * count},
         })
         shots = [s for s in _json_from(res) if isinstance(s, str) and s.strip()]
     except AIError:
@@ -172,7 +168,7 @@ def enhance_image_prompt(key: str, model: str | None, idea: str) -> str:
     """Rewrites a short idea into a rich, detailed image prompt, the way ChatGPT does
     before it draws. This is the single biggest reason ChatGPT pictures look so good:
     a plain idea like "a dog" becomes a full visual description. Falls back to the plain
-    idea if the free text AI is unavailable (e.g. offline)."""
+    idea if the on-phone AI can't answer."""
     idea = (idea or "").strip()
     if not model or len(idea) > 320:  # already long/detailed, or no text AI
         return idea
@@ -182,14 +178,15 @@ def enhance_image_prompt(key: str, model: str | None, idea: str) -> str:
         "into ONE detailed prompt for a text-to-image model, so the result looks like a professional "
         "ChatGPT / DALL-E picture. In natural sentences (no lists), describe the main subject clearly, "
         "then the setting, composition, lighting, mood, colour palette, depth of field and a fitting "
-        "photographic or art style. Be concrete and visual. 40-70 words. Keep the user's language, "
-        "subject and intent exactly. Put no text, letters, captions or watermarks in the image."
+        "photographic or art style. Be concrete and visual. 40-70 words. Always write the prompt in English "
+        "(picture models understand English best), even if the idea is in Hindi, Punjabi or Hinglish, and "
+        "keep the subject and intent exactly. Put no text, letters, captions or watermarks in the image."
     )
     try:
         res = _request(key, "POST", f"models/{model}:generateContent", {
             "contents": [{"role": "user", "parts": [{"text": f"{system}\n\nIdea: {idea}"}]}],
             "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema,
-                                 "temperature": 0.8},
+                                 "temperature": 0.7, "maxOutputTokens": 200},
         })
         out = _json_from(res)
         rich = (out.get("prompt") if isinstance(out, dict) else "") or ""
@@ -204,14 +201,15 @@ LANG_NAMES = {"en": "natural English", "hi": "Hindi written in Devanagari script
 
 
 def translate_lines(texts: list[str], lang: str) -> list[str]:
-    """Translates caption lines with the free AI, keeping one line per line."""
-    schema = {"type": "ARRAY", "items": {"type": "STRING"}}
+    """Translates caption lines with the on-phone AI, keeping one line per line."""
+    schema = {"type": "ARRAY", "items": {"type": "STRING"}, "minItems": len(texts), "maxItems": len(texts)}
     prompt = (f"Translate each of these {len(texts)} video caption lines into {LANG_NAMES[lang]}. Keep them short "
               "and natural. Return a JSON array with exactly one translated string per line, in the same order.\n\n"
               + json.dumps(texts, ensure_ascii=False))
     res = _request(FREE, "POST", "models/free:generateContent", {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema, "temperature": 0},
+        "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema, "temperature": 0,
+                             "maxOutputTokens": 30 + 60 * len(texts)},
     }, timeout=180)
     out = _json_from(res)
     if not isinstance(out, list) or len(out) != len(texts):
@@ -234,8 +232,8 @@ def convert_lines(lines: list[dict], lang: str) -> list[dict]:
         needs_ai = True
     if needs_ai:
         out = []
-        for i in range(0, len(lines), 40):
-            part = lines[i:i + 40]
+        for i in range(0, len(lines), 12):  # small batches suit the on-phone model
+            part = lines[i:i + 12]
             try:
                 texts = translate_lines([ln["text"] for ln in part], lang)
             except AIError:
@@ -314,6 +312,51 @@ Rules:
 """
 
 
+CONTEXT_CHARS = 5000  # what fits next to the guide in the on-phone model's memory
+
+
+def _compact(context: dict, message: str, budget: int = CONTEXT_CHARS) -> dict:
+    """Shrinks the edit description to what matters for this message, so it fits the on-phone model."""
+    ctx = json.loads(json.dumps(context, ensure_ascii=False))
+    words = {w for w in re.findall(r"\w+", message.lower()) if len(w) > 2}
+    if not any(w in message.lower() for w in ("style", "caption", "subtitle", "कैप्शन", "ਕੈਪਸ਼ਨ")):
+        ctx.pop("caption_styles", None)
+    for c in ctx.get("clips", []):
+        c.pop("quality", None)
+
+    def size() -> int:
+        return len(json.dumps(ctx, ensure_ascii=False, separators=(",", ":")))
+
+    def relevant(text: str) -> bool:
+        return bool(words & set(re.findall(r"\w+", text.lower())))
+
+    for key, sub in (("transcript", None), ("sources", "what_happens")):
+        while size() > budget:
+            items = ctx.get(key) if sub is None else None
+            if sub is not None:
+                lists = [s_ for s_ in ctx.get(key, []) if len(s_.get(sub) or []) > 4]
+                if not lists:
+                    break
+                for s_ in lists:
+                    s_[sub] = s_[sub][::2]
+                continue
+            if not items or len(items) <= 6:
+                break
+            keep = [x for x in items if relevant(x.get("text", ""))]
+            rest = [x for x in items if x not in keep]
+            ctx[key] = sorted(keep[: len(items) // 2] + rest[::2][: max(0, len(items) // 2 - len(keep))],
+                              key=lambda x: x.get("at", 0))
+    while size() > budget and len(ctx.get("clips", [])) > 12:
+        ctx["clips"] = ctx["clips"][::2]
+        ctx["note"] = "only some clips are listed"
+    for c in ctx.get("clips", []):
+        if size() <= budget:
+            break
+        if "shows" in c:
+            c["shows"] = c["shows"][:80]
+    return ctx
+
+
 def edit_chat(key: str, model: str, context: dict, message: str, history: list[dict]) -> dict:
     """Turns a chat message about the current edit into {"reply", "operations"}."""
     op = {"type": "OBJECT", "properties": {
@@ -328,14 +371,17 @@ def edit_chat(key: str, model: str, context: dict, message: str, history: list[d
         "operations": {"type": "ARRAY", "items": op},
     }, "required": ["reply", "operations"]}
     contents = []
-    for h in history[-8:]:
-        contents.append({"role": "user" if h["role"] == "user" else "model", "parts": [{"text": h["text"][:2000]}]})
-    contents.append({"role": "user", "parts": [{"text": "CURRENT EDIT:\n" + json.dumps(context, ensure_ascii=False)
+    for h in history[-4:]:
+        contents.append({"role": "user" if h["role"] == "user" else "model", "parts": [{"text": h["text"][:300]}]})
+    ctx = _compact(context, message)
+    contents.append({"role": "user", "parts": [{"text": "CURRENT EDIT:\n"
+                                                + json.dumps(ctx, ensure_ascii=False, separators=(",", ":"))
                                                 + "\n\nUSER: " + message}]})
     res = _request(key, "POST", f"models/{model}:generateContent", {
         "systemInstruction": {"parts": [{"text": EDIT_GUIDE}]},
         "contents": contents,
-        "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema, "temperature": 0.2},
+        "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema, "temperature": 0.2,
+                             "maxOutputTokens": 400},
     }, timeout=180)
     out = _json_from(res)
     if not isinstance(out, dict):
@@ -346,25 +392,24 @@ def edit_chat(key: str, model: str, context: dict, message: str, history: list[d
 
 def describe_frames(key: str, model: str, frames: list[tuple[float, Path]]) -> list[dict]:
     """Looks at pictures taken from a video and says briefly what is happening at each moment."""
-    if not frames:
-        return []
-    parts = []
-    for t, f in frames:
-        parts.append({"text": f"t={t:.1f}s"})
-        parts.append({"inlineData": {"mimeType": "image/jpeg", "data": base64.b64encode(f.read_bytes()).decode()}})
-    parts.append({"text": "These are frames from one video, each labelled with its time. For each frame write a "
-                          "very short description (max 12 words) of what is visible: people, actions, place, "
-                          "objects, text on screen. Return one item per frame."})
-    schema = {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
-        "time": {"type": "NUMBER"}, "text": {"type": "STRING"}}, "required": ["time", "text"]}}
-    res = _request(key, "POST", f"models/{model}:generateContent", {
-        "contents": [{"role": "user", "parts": parts}],
-        "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema, "temperature": 0},
-    }, timeout=180)
     out = []
-    for item in _json_from(res) or []:
-        try:
-            out.append({"time": round(float(item["time"]), 1), "text": str(item["text"]).strip()[:120]})
-        except (KeyError, TypeError, ValueError):
-            continue
+    for i in range(0, len(frames), 4):  # a few pictures at a time suits the on-phone model
+        batch = frames[i:i + 4]
+        parts = []
+        for k, (t, f) in enumerate(batch):
+            parts.append({"text": f"Picture {k + 1} (at {t:.0f}s):"})
+            parts.append({"inlineData": {"mimeType": "image/jpeg", "data": base64.b64encode(f.read_bytes()).decode()}})
+        parts.append({"text": f"These {len(batch)} pictures are from one video. For each picture, in order, write a "
+                              "very short description (max 12 words) of what is visible: people, actions, place, "
+                              "objects, text on screen."})
+        schema = {"type": "ARRAY", "items": {"type": "STRING"}, "minItems": len(batch), "maxItems": len(batch)}
+        res = _request(key, "POST", f"models/{model}:generateContent", {
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema, "temperature": 0,
+                                 "maxOutputTokens": 40 * len(batch)},
+        }, timeout=180)
+        texts = _json_from(res) or []
+        for (t, _), text in zip(batch, texts):
+            if isinstance(text, str) and text.strip():
+                out.append({"time": round(float(t), 1), "text": text.strip()[:120]})
     return out

@@ -1,7 +1,6 @@
-"""A stand-in for the free AI services the app uses, used only by tests. It
-answers the same requests the real services do (OpenAI-style chat for the
-thinking AI, a picture for the picture AI), so the whole AI flow can be
-checked offline. POST /free/offline {"on": true} makes it act unreachable.
+"""A stand-in for the app's AI, used only by tests. It answers like the on-phone
+thinking AI (OpenAI-style chat, via BRAIN_TEST_URL) and the free online picture
+maker, so the whole AI flow can be checked without the 1 GB model. POST /free/offline {"on": true} makes it act unreachable.
 Run: python3 mock_gemini.py PORT"""
 
 import json
@@ -44,11 +43,11 @@ def answer(system: str, parts: list[dict]) -> str:
     """The AI's text answer for one request (parts: the last user message, Gemini-style)."""
     if "editor inside a phone video-editing app" in system:  # chat editing
         return json.dumps(chat_answer(parts[0]["text"]))
-    if any(p_.get("image") for p_ in parts):  # looking at frames
-        times = [float(p_["text"][2:-1]) for p_ in parts if p_.get("text", "").startswith("t=")]
-        return json.dumps([{"time": t, "text": "a colourful test pattern" if t < 6 else "a red dog on a beach"}
-                           for t in times])
     text = parts[0]["text"]
+    if "pictures are from one video" in text:  # looking at frames ("Picture 1 (at 3s):" labels)
+        import re
+        times = [float(t) for t in re.findall(r"Picture \d+ \(at (\d+)s\)", text)]
+        return json.dumps(["a colourful test pattern" if t < 6 else "a red dog on a beach" for t in times])
     if "expert prompt writer" in text:  # ChatGPT-style image prompt enhancement
         idea = text.split("Idea:", 1)[1].strip()
         return json.dumps({"prompt": f"A cinematic, highly detailed photograph of {idea}, soft golden-hour "

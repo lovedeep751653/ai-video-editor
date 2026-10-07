@@ -103,7 +103,7 @@ def main():
        "s=44100:d=40", "-c:a", "libmp3lame", str(mus))
 
     ai = subprocess.Popen([sys.executable, str(HERE / "mock_gemini.py"), str(PORT_AI)])
-    env = {**os.environ, "FREEAI_TEXT_BASES": f"http://127.0.0.1:{PORT_AI}/free/openai", "APP_PASSWORD": "1234",
+    env = {**os.environ, "BRAIN_TEST_URL": f"http://127.0.0.1:{PORT_AI}/free/openai", "APP_PASSWORD": "1234",
            "SPEECH_FAKE": json.dumps({"text": "ਸਤ ਸ੍ਰੀ ਅਕਾਲ ਦੋਸਤੋ ਅੱਜ ਅਸੀਂ ਪਹਾੜਾਂ ਵਿੱਚ ਹਾਂ"}),
            "FREEAI_BASES": f"http://127.0.0.1:{PORT_AI}/free/prompt/", "FREEAI_HORDE": "http://127.0.0.1:9/none",
            "EDITOR_DATA": str(data)}
@@ -201,14 +201,14 @@ def main():
         p = get(f"/api/projects/{pid}")[1]
         assert p["version"] == 5 and p["chat"][-1]["text"].startswith("Done"), p["chat"][-1]
 
-        # Offline the chat still understands the common commands
+        # If the AI can't answer, the chat still understands the common commands
         offline = lambda on: urllib.request.urlopen(urllib.request.Request(  # noqa: E731
             f"http://127.0.0.1:{PORT_AI}/free/offline", data=json.dumps({"on": on}).encode(), method="POST"))
         offline(True)
         p = chat("remove clip 1 and make it black and white")
         assert p["plan"]["look"] == "bw" and p["version"] == 6, p["chat"][-1]
         p = chat("tell me a joke")
-        assert "Without internet" in p["chat"][-1]["text"], p["chat"][-1]
+        assert "simple commands" in p["chat"][-1]["text"], p["chat"][-1]
         offline(False)
 
         # Cancelling

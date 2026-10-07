@@ -37,8 +37,8 @@ android {
         // Compress the video and Python libraries inside the APK (smaller download).
         jniLibs { useLegacyPackaging = true }
     }
-    // The speech model is stored uncompressed so it can be copied out quickly (and openFd gives its size).
-    androidResources { noCompress += listOf("ttf", "otf", "onnx", "txt") }
+    // The speech and Firely models are stored uncompressed so they can be copied out quickly (and openFd gives their size).
+    androidResources { noCompress += listOf("ttf", "otf", "onnx", "txt", "gguf") }
 }
 
 chaquopy {

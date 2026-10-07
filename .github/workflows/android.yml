@@ -32,9 +32,18 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/editor-downloads
-          key: speech-sherpa-1.13.8-omnilingual-300m-v1
+          key: downloads-speech-sherpa-1.13.8-brain-qwen3vl2b-llamapy-0.3.36-v1
       - name: Copy the editor into the app
         run: sh .github/scripts/prepare-android.sh
+      # Firely's engine (llama.cpp) is compiled for the phone only when its code changes.
+      - id: brain-cache
+        uses: actions/cache@v4
+        with:
+          path: android/app/src/main/jniLibs
+          key: brain-libs-${{ hashFiles('android/app/src/main/cpp/*.cpp', 'android/app/src/main/cpp/CMakeLists.txt', '.github/scripts/build-brain.sh', '.github/scripts/prepare-android.sh') }}
+      - name: Build the on-phone AI engine
+        if: steps.brain-cache.outputs.cache-hit != 'true'
+        run: sh .github/scripts/build-brain.sh
       - name: Build APK
         working-directory: android
         run: gradle assembleRelease --no-daemon -PversionCode=${{ github.run_number }} -PversionName=2.${{ github.run_number }}
@@ -43,6 +52,10 @@ jobs:
           mkdir -p out
           cp android/app/build/outputs/apk/release/*.apk out/AI-editor-open-source.apk
           ls -la out
+          unzip -l out/AI-editor-open-source.apk | grep -E "libbrain|assets/brain" || true
+          # GitHub download links allow at most 2 GiB per file.
+          size=$(stat -c %s out/AI-editor-open-source.apk)
+          [ "$size" -lt 2140000000 ] || { echo "APK is too big for a GitHub download link: $size bytes"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: apk
@@ -113,6 +126,7 @@ jobs:
           name: AI editor open source APK
           body: |
             Install this file on your Android phone. Everything runs on the phone itself: no website or server needed.
-            All the AI is built in and free: no key, account or subscription. Captions work offline; AI pictures, AI videos and the chat's free-form understanding just need an internet connection.
+            All the AI is built in and free: no key, account or subscription. Firely, the app's own thinking AI, runs on your phone and works offline: it understands your typed requests and chat edits, looks at your videos and writes picture ideas. Captions work offline too. AI pictures and AI videos are drawn by a free online picture maker, so they need internet.
+            Firely is built on Qwen3-VL (Apache 2.0) and llama.cpp (MIT).
           files: out/AI-editor-open-source.apk
           make_latest: true

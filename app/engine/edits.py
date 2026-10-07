@@ -520,11 +520,11 @@ def parse_local(message: str, plan: Plan) -> tuple[list[dict], bool]:
     return ops, bool(ops)
 
 
-LOCAL_HELP = ("Without internet I understand simple commands like: \"remove clip 3\", "
+LOCAL_HELP = ("Right now I understand simple commands like: \"remove clip 3\", "
               "\"cut from 0:10 to 0:25\", \"move clip 4 to the start\", \"slow motion on clip 2\", "
               "\"make it black and white\", \"make it 30 seconds\", \"remove the pauses\", "
               "\"title 'Goa Trip'\", \"add text 'Happy birthday' at 0:05\", \"captions in Punjabi\", "
-              "\"music quieter\", \"undo\". Connect to the internet and I'll understand anything you say.")
+              "\"music quieter\", \"undo\".")
 
 
 def summary(result: Result) -> str:
