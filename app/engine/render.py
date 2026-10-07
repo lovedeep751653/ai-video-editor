@@ -161,7 +161,14 @@ def _content(part: Part, m: Media, plan: Plan, gain: float) -> tuple[list[str], 
         n = part.frames
         zoom_in = c.media_index % 2 == 0  # alternate zoom in / zoom out between photos
         z = f"1+0.10*on/{n}" if zoom_in else f"1.10-0.10*on/{n}"
-        chain = [_shape("0:v", "big", w * 2, h * 2, c.fill),
+        # Pre-scale large photos (phone cameras shoot 12-50 MP) to at most
+        # 2× the output size *before* the zoompan filter.  Without this,
+        # FFmpeg allocates full-resolution buffers and the Android low-memory
+        # killer terminates the app around 40-45 % progress.
+        max_w, max_h = w * 2, h * 2
+        prescale = (f"[0:v]scale='min(iw,{max_w})':'min(ih,{max_h})':"
+                    f"force_original_aspect_ratio=decrease[_pre];")
+        chain = [prescale + _shape("_pre", "big", max_w, max_h, c.fill),
                  f"[big]zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}:fps={FPS},"
                  f"{_zoom(c.zoom, w, h)}{look}trim=end_frame={n},format=yuv420p[v]",
                  f"[1:a]{stereo},{end_a}"]
