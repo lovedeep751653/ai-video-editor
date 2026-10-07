@@ -85,13 +85,16 @@ jobs:
           name: free-ai-pictures
           path: out/free-ai
       - name: Test on an Android phone emulator
+        timeout-minutes: 60
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
           arch: x86_64
           target: google_apis
-          ram-size: 4096M
-          disk-size: 8G
+          # Firely needs room: the 1.9 GB app, plus its AI unpacked to storage and loaded in memory.
+          ram-size: 6144M
+          heap-size: 512M
+          disk-size: 12G
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: bash .github/scripts/selftest.sh out/AI-editor-open-source.apk
