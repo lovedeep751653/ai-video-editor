@@ -168,6 +168,37 @@ def shot_ideas(key: str, model: str | None, idea: str, count: int) -> list[str]:
     return (shots + [idea] * count)[:count]
 
 
+def enhance_image_prompt(key: str, model: str | None, idea: str) -> str:
+    """Rewrites a short idea into a rich, detailed image prompt, the way ChatGPT does
+    before it draws. This is the single biggest reason ChatGPT pictures look so good:
+    a plain idea like "a dog" becomes a full visual description. Falls back to the plain
+    idea if the free text AI is unavailable (e.g. offline)."""
+    idea = (idea or "").strip()
+    if not model or len(idea) > 320:  # already long/detailed, or no text AI
+        return idea
+    schema = {"type": "OBJECT", "properties": {"prompt": {"type": "STRING"}}, "required": ["prompt"]}
+    system = (
+        "You are the expert prompt writer built into ChatGPT's image tool. Turn the user's idea "
+        "into ONE detailed prompt for a text-to-image model, so the result looks like a professional "
+        "ChatGPT / DALL-E picture. In natural sentences (no lists), describe the main subject clearly, "
+        "then the setting, composition, lighting, mood, colour palette, depth of field and a fitting "
+        "photographic or art style. Be concrete and visual. 40-70 words. Keep the user's language, "
+        "subject and intent exactly. Put no text, letters, captions or watermarks in the image."
+    )
+    try:
+        res = _request(key, "POST", f"models/{model}:generateContent", {
+            "contents": [{"role": "user", "parts": [{"text": f"{system}\n\nIdea: {idea}"}]}],
+            "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema,
+                                 "temperature": 0.8},
+        })
+        out = _json_from(res)
+        rich = (out.get("prompt") if isinstance(out, dict) else "") or ""
+        rich = " ".join(rich.split()).strip()
+    except AIError:
+        rich = ""
+    return rich if len(rich) > len(idea) else idea
+
+
 LANG_NAMES = {"en": "natural English", "hi": "Hindi written in Devanagari script",
               "pa": "Punjabi written in Gurmukhi script"}
 

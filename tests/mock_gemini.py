@@ -49,6 +49,10 @@ def answer(system: str, parts: list[dict]) -> str:
         return json.dumps([{"time": t, "text": "a colourful test pattern" if t < 6 else "a red dog on a beach"}
                            for t in times])
     text = parts[0]["text"]
+    if "expert prompt writer" in text:  # ChatGPT-style image prompt enhancement
+        idea = text.split("Idea:", 1)[1].strip()
+        return json.dumps({"prompt": f"A cinematic, highly detailed photograph of {idea}, soft golden-hour "
+                           "light, shallow depth of field, rich natural colours, professional photography"})
     if "camera shot descriptions" in text:
         return json.dumps(["A wide shot of the scene", "A close-up detail", "A slow pan at sunset"])
     if "Translate each of these" in text:

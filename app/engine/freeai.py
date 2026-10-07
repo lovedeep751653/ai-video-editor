@@ -27,6 +27,12 @@ HORDE_SIZES = {"9:16": (576, 1024), "16:9": (1024, 576), "1:1": (832, 832)}
 CLIP_SECONDS = 5.0
 POLLINATIONS = [b for b in os.environ.get("FREEAI_BASES", "https://image.pollinations.ai/prompt/,"
                                           "https://gen.pollinations.ai/image/").split(",") if b]
+# Best free picture models to try, best first. "gptimage" is the same model
+# ChatGPT draws with and "nanobanana" is Google's Gemini image model; both are
+# far sharper than plain flux. If a model is gated or busy we fall straight
+# back to flux, so quality is as high as the free services currently allow.
+MODELS = [m for m in os.environ.get("FREEAI_MODELS", "gptimage,nanobanana,flux").split(",") if m]
+_good_model: str | None = None  # remembered once one works, so we don't re-probe gated models every time
 HORDE = os.environ.get("FREEAI_HORDE", "https://aihorde.net/api/v2")
 
 
@@ -62,10 +68,11 @@ def shot_prompts(idea: str, count: int) -> list[str]:
     return [f"{idea}, {SHOTS[i % len(SHOTS)]}" for i in range(count)]
 
 
-def _pollinations(prompt: str, aspect: str, seed: int) -> bytes:
+def _one_model(prompt: str, aspect: str, seed: int, model: str) -> bytes:
+    """Fetches one picture from a single Pollinations model, raising if it's gated or fails."""
     w, h = SIZES.get(aspect, SIZES["9:16"])
     q = urllib.parse.quote(f"{prompt}, {QUALITY}", safe="")
-    params = urllib.parse.urlencode({"width": w, "height": h, "model": "flux", "seed": seed,
+    params = urllib.parse.urlencode({"width": w, "height": h, "model": model, "seed": seed,
                                      "nologo": "true", "private": "true", "enhance": "true"})
     errors = []
     for base in POLLINATIONS:
@@ -76,10 +83,26 @@ def _pollinations(prompt: str, aspect: str, seed: int) -> bytes:
                     return data
                 errors.append("no picture returned")
             except (urllib.error.URLError, TimeoutError, OSError) as e:
-                errors.append(str(getattr(e, "code", "") or getattr(e, "reason", "") or e))
-                if getattr(e, "code", 0) in (401, 402, 403, 404):
-                    break
+                code = getattr(e, "code", 0)
+                errors.append(str(code or getattr(e, "reason", "") or e))
+                if code in (401, 402, 403, 404):  # gated or unknown model: don't keep retrying it
+                    raise FreeAIError("; ".join(errors[-2:]))
             time.sleep(3 * (attempt + 1))
+    raise FreeAIError("; ".join(errors[-2:]))
+
+
+def _pollinations(prompt: str, aspect: str, seed: int) -> bytes:
+    global _good_model
+    # Try the model that worked last time first, so we don't re-probe gated ones every picture.
+    order = ([_good_model] + [m for m in MODELS if m != _good_model]) if _good_model else MODELS
+    errors = []
+    for model in order:
+        try:
+            data = _one_model(prompt, aspect, seed, model)
+            _good_model = model
+            return data
+        except FreeAIError as e:
+            errors.append(f"{model}: {e}")
     raise FreeAIError("; ".join(errors[-2:]))
 
 

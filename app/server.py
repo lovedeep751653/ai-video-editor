@@ -749,6 +749,7 @@ def create_ai(body: dict) -> dict:
     def make(report, prompts):
         files = []
         for i, p in enumerate(prompts):
+            p = genai.enhance_image_prompt(key, models["text"], p)  # ChatGPT-style rich prompt for a better picture
             label = f"Creating {'video clip' if need == 'video' else 'picture'} {i + 1} of {len(prompts)}"
             base = i / len(prompts)
             report(label, base * share)
