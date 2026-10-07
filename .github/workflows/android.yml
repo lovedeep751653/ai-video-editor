@@ -113,6 +113,6 @@ jobs:
           name: AI editor open source APK
           body: |
             Install this file on your Android phone. Everything runs on the phone itself: no website or server needed.
-            AI pictures, AI videos, captions and the chat's free-form understanding need internet and your own Google AI key (Settings in the app).
+            All the AI is built in and free: no key, account or subscription. Captions work offline; AI pictures, AI videos and the chat's free-form understanding just need an internet connection.
           files: out/AI-editor-open-source.apk
           make_latest: true
