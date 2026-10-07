@@ -24,16 +24,25 @@ class AIError(Exception):
     pass
 
 
-def _schema(g: dict) -> dict:
-    """Gemini schema (type: OBJECT...) to standard JSON schema (type: object...)."""
-    out = {k: v for k, v in g.items() if k not in ("type", "properties", "items")}
-    if "type" in g:
-        out["type"] = g["type"].lower()
-    if "properties" in g:
-        out["properties"] = {k: _schema(v) for k, v in g["properties"].items()}
-    if "items" in g:
-        out["items"] = _schema(g["items"])
-    return out
+def _example(g: dict) -> str:
+    """A plain example of the answer's shape. The grammar already enforces the exact shape; showing the
+    raw schema made the small model copy the schema itself into its answer."""
+    t = g.get("type", "STRING").upper()
+    if "enum" in g:
+        return " or ".join(json.dumps(v, ensure_ascii=False) for v in g["enum"][:6])
+    if t == "OBJECT":
+        props = g.get("properties", {})
+        return "{" + ", ".join(f'"{k}": {_example(v)}' for k, v in props.items()) + "}"
+    if t == "ARRAY":
+        n = g.get("minItems") or 1
+        item = _example(g.get("items", {}))
+        return "[" + ", ".join([item] * min(n, 3)) + (", ..." if n > 3 else "") + "]" + (
+            f" (exactly {n} items)" if n == g.get("maxItems") else "")
+    if t in ("NUMBER", "INTEGER"):
+        return "0"
+    if t == "BOOLEAN":
+        return "true"
+    return '"..."'
 
 
 def _unfence(text: str) -> str:
@@ -51,8 +60,7 @@ def _local_generate(body: dict) -> dict:
     system = " ".join(p.get("text", "") for p in (body.get("systemInstruction") or {}).get("parts", []))
     schema = cfg.get("responseSchema")
     if schema:
-        system += ("\n\nAnswer with JSON only that matches this JSON schema:\n"
-                   + json.dumps(_schema(schema), ensure_ascii=False, separators=(",", ":")))
+        system += "\n\nAnswer with JSON only, shaped like this (replace ... with your answer):\n" + _example(schema)
     messages = [{"role": "system", "content": system.strip()}] if system.strip() else []
     images: list[str] = []
     tmp: list[Path] = []

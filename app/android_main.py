@@ -128,7 +128,9 @@ def _selftest(folder: str, saf_path: str, port: int, token: str) -> None:
             pic = Path(folder) / "brain_look.jpg"
             _ff.run_quiet(["-f", "lavfi", "-i", "testsrc2=s=480x270", "-frames:v", "1", str(pic)])
             seen = _g.describe_frames(_g.FREE, "free", [(1.0, pic)])
-            check("brain_vision", bool(seen and seen[0].get("text")), f"{time.time() - t:.1f}s {seen}")
+            said = (seen[0].get("text") or "") if seen else ""
+            # A real description is words, not a copy of the answer format.
+            check("brain_vision", bool(said) and not any(c in said for c in "{}[]"), f"{time.time() - t:.1f}s {seen}")
         except Exception as e:  # noqa: BLE001
             check("brain_vision", False, f"{time.time() - t:.1f}s {e}")
         t = time.time()
