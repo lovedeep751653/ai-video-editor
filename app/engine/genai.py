@@ -192,12 +192,11 @@ def convert_lines(lines: list[dict], lang: str) -> list[dict]:
     """Puts recognised speech into the caption language the user picked."""
     if not lines:
         return lines
+    lines = [{**ln, "text": translit.tidy(ln["text"])} for ln in lines]
     main = translit.script_of(" ".join(ln["text"] for ln in lines))
     if lang == "hinglish":
         return [{**ln, "text": translit.romanize(ln["text"])} for ln in lines]
     if lang == "auto":
-        if main in ("ur", "hi") or any(translit.ARABIC.search(ln["text"]) for ln in lines):
-            return [{**ln, "text": translit.to_script(ln["text"], "hi")} for ln in lines]
         return lines
     needs_ai = (lang == "en" and main != "en") or (lang in ("hi", "pa") and main == "en")
     if lang in ("hi", "pa") and main in ("hi", "pa", "ur") and main != lang:

@@ -261,11 +261,21 @@ def _finish(plan: Plan, start: float, dur: float, first: bool, last: bool, ass: 
     return inputs, chain
 
 
+def _has_video(path: str) -> bool:
+    info = ff.probe(path) or {}
+    return any(st.get("codec_type") == "video" for st in info.get("streams", []))
+
+
 def _run_encode(build, duration: float, progress, speed: str, height: int, intermediate: bool) -> None:
-    """Encodes with the phone's video chip when allowed, falling back to the software encoder."""
+    """Encodes with the phone's video chip when allowed, falling back to the software encoder
+    (also when the chip reports success but wrote no picture, which happens when the phone is short of memory)."""
     use_hw = speed == "fast" and ff.hardware_available()
     try:
-        ff.run(build(ff.video_args(speed, height, intermediate, hw=use_hw)), duration, progress)
+        args = build(ff.video_args(speed, height, intermediate, hw=use_hw))
+        ff.run(args, duration, progress)
+        if use_hw and not _has_video(args[-1]):
+            print(f"render: the video chip wrote no picture to {Path(args[-1]).name}, using software")
+            raise ff.FFError("the video chip wrote no picture")
     except ff.FFError as e:
         if not use_hw:
             raise RenderError(str(e)) from e
@@ -317,6 +327,9 @@ def render(plan: Plan, media: dict[int, Media], out: Path, cache: Path, overlay:
             name = f"{_key(base, getattr(m, 'key', str(m.path)), gain, clips, 'mid')}.mp4"
         target = cache / name
         used.append(target)
+        if target.exists() and target.stat().st_size > 0 and not _has_video(target):
+            print(f"render: cached part {target.name} has no picture, making it again")
+            target.unlink()
         if target.exists() and target.stat().st_size > 0:
             reused += 1
             done += weights[i]

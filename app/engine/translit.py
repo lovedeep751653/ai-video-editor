@@ -209,6 +209,43 @@ def romanize(text: str) -> str:
     return re.sub(r"[ऀ-ॣ०-ॿ]+", lambda m: _roman_word(m.group(0)), text)
 
 
+AR_LATIN = {"ا": "a", "آ": "a", "ب": "b", "پ": "p", "ت": "t", "ٹ": "t", "ث": "s", "ج": "j", "چ": "ch", "ح": "h",
+            "خ": "kh", "د": "d", "ڈ": "d", "ذ": "z", "ر": "r", "ڑ": "r", "ز": "z", "ژ": "zh", "س": "s", "ش": "sh",
+            "ص": "s", "ض": "z", "ط": "t", "ظ": "z", "ع": "a", "غ": "g", "ف": "f", "ق": "q", "ک": "k", "ك": "k",
+            "گ": "g", "ل": "l", "م": "m", "ن": "n", "ں": "n", "و": "o", "ہ": "h", "ه": "h", "ھ": "h", "ی": "i",
+            "ي": "i", "ى": "i", "ے": "e", "ئ": "i", "ء": ""}
+
+
+def _latin_letters(run: str) -> str:
+    """Letters of another script inside an English word, one Roman letter each (no added vowels)."""
+    out = []
+    for c in unicodedata.normalize("NFD", guru_to_deva(run)):
+        if c in AR_LATIN:
+            out.append(AR_LATIN[c])
+        elif c in CONS:
+            out.append(CONS[c])
+        elif c in VOWELS:
+            out.append(VOWELS[c])
+        elif c in MATRAS:
+            out.append(MATRAS[c])
+        elif c in (ANUSVARA, CANDRA):
+            out.append("n")
+    return "".join(out)
+
+
+def tidy(text: str) -> str:
+    """The speech model can slip letters of another script into a line ("اsك not" for "ask not").
+    Puts every letter of the line into the line's main script."""
+    latin, deva, guru, arab = (len(r.findall(text)) for r in (LATIN, DEVA, GURU, ARABIC))
+    if not (arab or (latin and (deva or guru))):
+        return text
+    if latin >= deva + guru + arab:
+        return re.sub(r"[\u0600-\u06FF\u0900-\u097F\u0A00-\u0A7F]+", lambda m: _latin_letters(m.group(0)), text)
+    if not arab:
+        return text
+    return to_script(text, "pa" if guru > deva else "hi")
+
+
 def script_of(text: str) -> str:
     counts = {"hi": len(DEVA.findall(text)), "pa": len(GURU.findall(text)), "en": len(LATIN.findall(text)),
               "ur": len(ARABIC.findall(text))}
