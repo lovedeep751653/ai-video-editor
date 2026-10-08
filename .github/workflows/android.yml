@@ -14,8 +14,19 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
+      # The APK carries ~1.5 GB of AI models, and the build makes several copies of them
+      # (download cache, assets, merged assets, the APK itself). Remove big preinstalled tools
+      # this build never uses so the machine can't run out of disk half way through.
+      # The Android SDK (/usr/local/lib/android) is kept: the build needs it.
+      - name: Make room on the build machine
+        run: |
+          echo "Before: $(df -h / | awk 'NR==2 {print $4}') free"
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/julia* || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          echo "::notice title=Build machine::$(df -h / | awk 'NR==2 {print $4}') disk free, $(free -m | awk '/^Mem:/ {print $7}') MB memory available"
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v5
         with:
@@ -29,7 +40,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: '8.11.1'
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: ~/.cache/editor-downloads
           key: downloads-speech-sherpa-1.13.8-brain-qwen3vl2b-llamapy-0.3.36-v1
@@ -37,7 +48,7 @@ jobs:
         run: sh .github/scripts/prepare-android.sh
       # Firely's engine (llama.cpp) is compiled for the phone only when its code changes.
       - id: brain-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: android/app/src/main/jniLibs
           key: brain-libs-${{ hashFiles('android/app/src/main/cpp/*.cpp', 'android/app/src/main/cpp/CMakeLists.txt', '.github/scripts/build-brain.sh', '.github/scripts/prepare-android.sh') }}
@@ -46,27 +57,29 @@ jobs:
         run: sh .github/scripts/build-brain.sh
       - name: Build APK
         working-directory: android
-        run: gradle assembleRelease --no-daemon -PversionCode=${{ github.run_number }} -PversionName=2.${{ github.run_number }}
+        # Says why in an annotation if it fails, and retries once if the machine (not the code) was the cause.
+        run: sh ../.github/scripts/gradle-build.sh assembleRelease --no-daemon -PversionCode=${{ github.run_number }} -PversionName=2.${{ github.run_number }}
       - name: Name the APK
         run: |
           mkdir -p out
-          cp android/app/build/outputs/apk/release/*.apk out/AI-editor-open-source.apk
+          # mv, not cp: a second 1.9 GB copy only costs disk.
+          mv android/app/build/outputs/apk/release/*.apk out/AI-editor-open-source.apk
           ls -la out
           unzip -l out/AI-editor-open-source.apk | grep -E "libbrain|assets/brain" || true
           # GitHub download links allow at most 2 GiB per file.
           size=$(stat -c %s out/AI-editor-open-source.apk)
           [ "$size" -lt 2140000000 ] || { echo "APK is too big for a GitHub download link: $size bytes"; exit 1; }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: apk
           path: out/AI-editor-open-source.apk
 
   test:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           name: apk
           path: out
@@ -79,7 +92,7 @@ jobs:
         continue-on-error: true
         timeout-minutes: 15
         run: python3 .github/scripts/check-free-ai.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: free-ai-pictures
@@ -98,14 +111,14 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: bash .github/scripts/selftest.sh out/AI-editor-open-source.apk
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: test-results
           path: out/test
       - name: Publish test screenshots
         if: always()
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: selftest-latest
           name: Latest phone test results
@@ -117,9 +130,9 @@ jobs:
   publish:
     needs: build
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           name: apk
           path: out
